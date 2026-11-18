@@ -171,6 +171,23 @@ class TestTownSigns(unittest.TestCase):
         self.assertEqual(rom.sign(FakeRom.MIDO_SIGN), Client.sign_bytes("A_VERY_LONG$HAMMER", 4))
 
 
+    def test_scouts_again_after_a_reconnect(self) -> None:
+        rom = FakeRom()
+        ctx = self.make_ctx({})
+        client = self.run_check(ctx, rom)
+        self.assertEqual(len(ctx.sent), 1)
+        client.signs_scout_retry = 0.0  # the retry time has passed and no reply came (a reconnect forgets them)
+        self.run_check(ctx, rom, client)
+        self.assertEqual(len(ctx.sent), 2)
+
+    def test_slot_data_without_locations_does_nothing(self) -> None:
+        rom = FakeRom()
+        ctx = self.make_ctx({})
+        ctx.slot_data = {}
+        self.run_check(ctx, rom)
+        self.assertEqual(rom.writes, [])
+
+
 class TestShortItemName(unittest.TestCase):
     def test_short_names_fit_two_lines(self) -> None:
         self.assertEqual(Client.short_item_name("Progressive Sword"), "SWORD$UPGRADE")
@@ -267,6 +284,22 @@ class TestHelpfulHints(unittest.TestCase):
         self.assertEqual(rom.writes, [])
         self.assertEqual(ctx.sent, [])
 
+
+    def test_every_text_index_of_a_hint_npc_is_written(self) -> None:
+        rom = self.make_rom()
+        self.run_check(self.make_ctx({self.GRASS: (1, "Hammer", 1), self.PALACE: (1, "Raft", 1)}), rom)
+        written = {address for address, _data, _domain in rom.writes}
+        self.assertGreaterEqual(len(written), 2)
+
+    def test_hints_use_the_seed_name_the_server_reported(self) -> None:
+        client = Client.Z2RClient()
+        orders = set()
+        for seed in ("a1", "b2", "c3", "d4", "e5", "f6", "g7", "h8"):
+            ctx = self.make_ctx({self.GRASS: (1, "Hammer", 1), self.PALACE: (1, "Raft", 1)})
+            ctx.seed_name = None
+            ctx.server_seed_name = seed
+            orders.add(tuple(client.choose_hints(ctx, 2)))
+        self.assertGreater(len(orders), 1)
 
 class TestOtherPlayerSigns(unittest.TestCase):
     def test_short_form_keeps_the_full_name(self) -> None:

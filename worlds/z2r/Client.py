@@ -90,6 +90,7 @@ GAME_MODES_IN_CONTROL = (0x05, 0x0B)  # overworld, side view (towns, palaces, ca
 # another player's item. The game reads sign text from the ROM each time a sign is shown.
 SIGN_SIZE = 22
 SIGN_RECHECK_SECONDS = 5  # rewrite the signs this often in case the ROM was reloaded
+SCOUT_RETRY_SECONDS = 10  # ask for the items again if no reply came (a reconnect forgets them)
 # The text tables are placed anywhere in bank 3, so they are found through their pointers at CPU $B423 (west) and
 # $B425 (east) in bank 3. Bank 3 starts at 0xC000 in "PRG ROM" and is mapped at CPU $8000.
 TEXT_TABLE_POINTERS = 0xF423
@@ -282,9 +283,11 @@ class Z2RClient(BizHawkClient):
     last_state: tuple[int, int, int] | None
     sent_events: set[str]
     signs_scouted: bool
+    signs_scout_retry: float
     signs_written: dict[int, bytes]
     next_sign_check: float
     hints_scouted: bool
+    hints_scout_retry: float
     next_hint_check: float
     hints_written: dict[int, bytes]
 
@@ -297,9 +300,11 @@ class Z2RClient(BizHawkClient):
         self.last_state = None
         self.sent_events = set()
         self.signs_scouted = False
+        self.signs_scout_retry = 0.0
         self.signs_written = {}
         self.next_sign_check = 0.0
         self.hints_scouted = False
+        self.hints_scout_retry = 0.0
         self.next_hint_check = 0.0
         self.hints_written = {}
 
@@ -321,9 +326,11 @@ class Z2RClient(BizHawkClient):
         self.seed_mismatch_logged = False
         self.sent_events = set()
         self.signs_scouted = False
+        self.signs_scout_retry = 0.0
         self.signs_written = {}
         self.next_sign_check = 0.0
         self.hints_scouted = False
+        self.hints_scout_retry = 0.0
         self.next_hint_check = 0.0
         self.hints_written = {}
         ctx.game = self.game
@@ -486,9 +493,9 @@ class Z2RClient(BizHawkClient):
     def wizard_towns(self, ctx: "BizHawkClientContext") -> dict[int, int]:
         """Location ID -> town type for each wizard location in this slot."""
         towns: dict[int, int] = {}
-        for name, data in ctx.slot_data["locations"].items():
+        for name, data in ctx.slot_data.get("locations", {}).items():
             location_id = LOCATION_NAME_TO_ID.get(name)
-            if location_id is not None and data["address"] == WIZARD_FLAGS and data["mask"] in TOWN_BITS:
+            if location_id is not None and data.get("address") == WIZARD_FLAGS and data.get("mask") in TOWN_BITS:
                 towns[location_id] = TOWN_BITS.index(data["mask"]) + 1
         return towns
 
@@ -513,9 +520,10 @@ class Z2RClient(BizHawkClient):
             return
         missing = [location_id for location_id in towns if location_id not in ctx.locations_info]
         if missing:
-            if not self.signs_scouted:
+            if not self.signs_scouted or now >= self.signs_scout_retry:
                 await ctx.send_msgs([{"cmd": "LocationScouts", "locations": missing, "create_as_hint": 0}])
                 self.signs_scouted = True
+                self.signs_scout_retry = now + SCOUT_RETRY_SECONDS  # a reconnect forgets earlier replies
             return  # wait for the LocationInfo reply
         self.next_sign_check = now + SIGN_RECHECK_SECONDS
 
@@ -569,7 +577,8 @@ class Z2RClient(BizHawkClient):
         reconnect writes the same hints."""
         candidates = sorted(LOCATION_NAME_TO_ID[name] for name in ctx.slot_data.get("hint_places", {})
                             if name in LOCATION_NAME_TO_ID)
-        rng = random.Random(f"{ctx.seed_name}-{ctx.slot}-z2r-hints")
+        seed = getattr(ctx, "server_seed_name", None) or ctx.seed_name
+        rng = random.Random(f"{seed}-{ctx.slot}-z2r-hints")
         rng.shuffle(candidates)
         candidates.sort(key=lambda location_id: not ctx.locations_info[location_id].flags & 0b001)
         return candidates[:count]
@@ -588,18 +597,27 @@ class Z2RClient(BizHawkClient):
         location_ids = [LOCATION_NAME_TO_ID[name] for name in places if name in LOCATION_NAME_TO_ID]
         missing = [location_id for location_id in location_ids if location_id not in ctx.locations_info]
         if missing:
-            if not self.hints_scouted:
+            if not self.hints_scouted or now >= self.hints_scout_retry:
                 await ctx.send_msgs([{"cmd": "LocationScouts", "locations": missing, "create_as_hint": 0}])
                 self.hints_scouted = True
+                self.hints_scout_retry = now + SCOUT_RETRY_SECONDS
             return  # wait for the LocationInfo reply
         self.next_hint_check = now + SIGN_RECHECK_SECONDS
 
         names = {location_id: name for name, location_id in LOCATION_NAME_TO_ID.items()}
         chosen = self.choose_hints(ctx, len(slots))
-        addresses = await self.text_addresses(ctx, [indexes[0] for indexes in slots])
+        pairs = [(number, index) for number, indexes in enumerate(slots) for index in indexes]
+        pair_addresses = await self.text_addresses(ctx, [index for _number, index in pairs])
+        numbers: dict[int, int] = {}  # address -> hint number; merged texts share one address
+        for (number, _index), address in zip(pairs, pair_addresses):
+            if number < len(chosen):
+                numbers.setdefault(address, number)
+        addresses = list(numbers)
         current = await bizhawk.read(ctx.bizhawk_ctx, [(address, HINT_SIZE, "PRG ROM") for address in addresses])
         writes = []
-        for number, (address, now_bytes, location_id) in enumerate(zip(addresses, current, chosen)):
+        for address, now_bytes in zip(addresses, current):
+            number = numbers[address]
+            location_id = chosen[number]
             text = places[names[location_id]] + self.hint_item_text(ctx, location_id)
             wanted = hint_bytes(text, number)
             if wanted is None or now_bytes == wanted:
