@@ -53,7 +53,6 @@ Z2R:
     WEST_TOWN_RUTO:wizard: {address: 1914, mask: 4, collected: 1}
     WEST_TOWN_SARIA_NORTH:table: {address: 1941, mask: 2, collected: 1}
     WEST_TOWN_SARIA_NORTH:wizard: {address: 1914, mask: 2, collected: 1}
-  events:
     GREAT_PALACE:crystal: {address: 1937, mask: 255, collected: 1}
     PALACE1:crystal: {address: 1933, mask: 255, collected: 1}
     PALACE3:crystal: {address: 1936, mask: 255, collected: 1}
@@ -106,3 +105,9 @@ Z2R:
     WEST_TOWN_RUTO:wizard: [[TROPHY]]
     WEST_TOWN_SARIA_NORTH:table: [[BAGU_LETTER], [FAIRY, FOUR_CONTAINERS], [DASH, JUMP, TWO_CONTAINERS]]
     WEST_TOWN_SARIA_NORTH:wizard: [[BAGU_LETTER, MIRROR], [FAIRY, FOUR_CONTAINERS, MIRROR], [DASH, JUMP, MIRROR, TWO_CONTAINERS]]
+    PALACE1:crystal: [[KEY], [FAIRY, FOUR_CONTAINERS]]
+    PALACE3:crystal: [[FAIRY, FOUR_CONTAINERS, GLOVE, REFLECT], [FOUR_CONTAINERS, GLOVE, KEY, REFLECT]]
+    PALACE4:crystal: [[KEY], [FAIRY, FOUR_CONTAINERS]]
+    PALACE5:crystal: [[KEY, RAFT], [FAIRY, FOUR_CONTAINERS, RAFT]]
+    PALACE6:crystal: [[FLUTE, KEY, RAFT], [FAIRY, FLUTE, FOUR_CONTAINERS, RAFT]]
+    GREAT_PALACE:crystal: [[DOWNSTAB, GLOVE, KEY, UPSTAB], [DOWNSTAB, FAIRY, FOUR_CONTAINERS, GLOVE, UPSTAB]]

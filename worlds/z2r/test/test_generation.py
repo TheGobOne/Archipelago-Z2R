@@ -6,12 +6,15 @@ class TestGeneration(Z2RTestBase):
     def test_all_locations_created(self) -> None:
         names = {location.name for location in self.multiworld.get_locations(self.player)}
         locations = set(self.options["locations"])
-        bosses = {f"Defeat {node}" for node in PALACE_BOSS_NODES if node != self.options["great_palace"]}
+        has_crystals = any(name.endswith(":crystal") for name in locations)
+        bosses = {f"Defeat {node}" for node in PALACE_BOSS_NODES
+                  if node != self.options["great_palace"] and not has_crystals}
         self.assertEqual(names, locations | {GOAL_EVENT, *self.options["fixed_items"], *bosses})
         self.assertTrue(locations <= set(LOCATION_NAME_TO_ID))
 
     def test_pool_fills_locations(self) -> None:
-        self.assertEqual(len(self.multiworld.itempool), len(self.options["locations"]))
+        crystals = [name for name in self.options["locations"] if name.endswith(":crystal")]
+        self.assertEqual(len(self.multiworld.itempool), len(self.options["locations"]) - len(crystals))
 
 
     def test_dash_replaced_by_fairy(self) -> None:
@@ -51,13 +54,23 @@ class TestSwappedGreatPalace(TestGeneration):
         self.assertIn("Defeat GREAT_PALACE:boss", {location.name for location in self.multiworld.get_locations(self.player)})
 
 
-class TestEventsAndPriorityLocations(TestGeneration):
-    """A seed with palace crystal events and the app's priority_locations."""
+class TestCrystalLocations(TestGeneration):
+    """A seed with palace crystal locations (one of them for the swapped Great Palace) and priority_locations."""
     sample = "sample5.yaml"
 
-    def test_events_are_in_slot_data(self) -> None:
-        events = self.world.fill_slot_data()["events"]
-        self.assertEqual(set(events), {f"PALACE{i}:crystal" for i in (1, 3, 4, 5, 6)} | {"GREAT_PALACE:crystal"})
+    def test_crystals_are_locked_in_place(self) -> None:
+        crystals = [location for location in self.multiworld.get_locations(self.player)
+                    if location.name.endswith(":crystal")]
+        self.assertEqual(len(crystals), 6)
+        for location in crystals:
+            self.assertIsNotNone(location.address)
+            self.assertEqual(location.item.name, "Crystal")
+        self.assertNotIn("Crystal", {item.name for item in self.multiworld.itempool})
 
     def test_priority_locations(self) -> None:
         self.assertTrue(self.world.options.priority_locations.value <= set(self.options["locations"]))
+
+
+class TestCrystalFixedItems(TestGeneration):
+    """The app lists each palace crystal as both a location and a fixed item."""
+    sample = "sample6.yaml"

@@ -64,6 +64,10 @@ class Z2RWorld(World):
     def _item_name(name: str) -> str:
         return ITEM_ALIASES.get(name, name)
 
+    @staticmethod
+    def _is_crystal(location_name: str) -> bool:
+        return location_name.endswith(":crystal")
+
     def _rule_for(self, routes: list[list[str]]) -> Callable[[CollectionState], bool]:
         """Routes are alternatives (OR) of requirement lists (AND)."""
         player = self.player
@@ -95,10 +99,15 @@ class Z2RWorld(World):
             location = Z2RLocation(self.player, name, LOCATION_NAME_TO_ID[name], menu)
             # stage_assert_generate rejects real seeds with missing rules; defaults keep the generic tests working
             location.access_rule = self._rule_for(rules.get(name, [[]]))
+            if self._is_crystal(name):
+                # The game places the crystal itself, so it never enters the item pool
+                location.place_locked_item(self.create_item(CRYSTAL_ITEM))
             menu.locations.append(location)
 
         # Town spots left out of the shuffle give a fixed item in game. Logic needs to know when it can be reached.
         for node, item_name in self.options.fixed_items.value.items():
+            if node in self.options.locations.value:
+                continue  # already a location (the palace crystals)
             item_name = self._item_name(item_name)
             if item_name not in ITEM_TABLE:
                 raise Exception(f"Unknown Z2R fixed item '{item_name}' at {node} for {self.player_name}")
@@ -108,8 +117,10 @@ class Z2RWorld(World):
             menu.locations.append(fixed)
 
         great_palace_node = self.options.great_palace.value
+        # Seeds with palace crystal locations count those. Older ones count the palace bosses defeated.
+        has_crystal_locations = any(self._is_crystal(name) for name in self.options.locations.value)
         for node in PALACE_BOSS_NODES:
-            if node == great_palace_node:
+            if node == great_palace_node or has_crystal_locations:
                 continue
             boss = Z2RLocation(self.player, f"Defeat {node}", None, menu)
             boss.access_rule = self._rule_for(rules.get(node, [[]]))
@@ -165,7 +176,7 @@ class Z2RWorld(World):
             elif name not in starting:
                 candidates.append(name)
 
-        slots = len(self.options.locations.value)
+        slots = sum(not self._is_crystal(name) for name in self.options.locations.value)
         pool = candidates[:slots]
         filler_count = slots - len(pool)
         pool += [self.get_filler_item_name() for _ in range(filler_count)]
