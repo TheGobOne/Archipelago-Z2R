@@ -66,8 +66,8 @@ class FakeRom:
         self.put_word(Client.TEXT_TABLE_POINTERS + 2, self.EAST_TABLE)
         self.put_word(self.prg(self.WEST_TABLE) + 41 * 2, self.MIDO_SIGN)
         self.put_word(self.prg(self.EAST_TABLE) + (94 - 52) * 2, self.OLD_KASUTO_SIGN)
-        self.put(self.MIDO_SIGN, mido_sign or Client.sign_bytes("AP$ITEM", 4))
-        self.put(self.OLD_KASUTO_SIGN, Client.sign_bytes("AP$ITEM", 8))
+        self.put(self.MIDO_SIGN, mido_sign or Client.legacy_sign_bytes("AP$ITEM", 4))
+        self.put(self.OLD_KASUTO_SIGN, Client.legacy_sign_bytes("AP$ITEM", 8))
         self.writes: list[tuple[int, bytes, str]] = []
 
     @staticmethod
@@ -113,7 +113,9 @@ class TestTownSigns(unittest.TestCase):
                                      "WEST_GRASS": {"address": 0x0600, "mask": 0x01, "collected": 0}}},
             locations_info={LOCATION_NAME_TO_ID[name]: SimpleNamespace(player=player, item=ids[name])
                             for name, (player, _item) in items.items()},
-            item_names=SimpleNamespace(lookup_in_game=lambda item, game: names[item]))
+            player_names={1: "Gob-Z2R", 2: "Gob-DWR", 3: "A_Very_Long_Player_"},
+            item_names=SimpleNamespace(lookup_in_game=lambda item, game: names[item],
+                                       lookup_in_slot=lambda item, player: names[item]))
 
     def run_check(self, ctx, rom: FakeRom, client: Client.Z2RClient | None = None) -> Client.Z2RClient:
         client = client or Client.Z2RClient()
@@ -121,13 +123,13 @@ class TestTownSigns(unittest.TestCase):
             asyncio.run(client.sign_check(ctx))
         return client
 
-    def test_own_item_is_named_and_other_players_item_is_generic(self) -> None:
+    def test_own_item_is_named_and_other_players_item_shows_owner(self) -> None:
         rom = FakeRom()
         ctx = self.make_ctx({self.MIDO: (1, "Hammer"), self.OLD_KASUTO: (2, "Hammer")})
         self.run_check(ctx, rom)
-        self.assertEqual(rom.sign(FakeRom.MIDO_SIGN), Client.sign_bytes("HAMMER", 4))
-        self.assertEqual(rom.sign(FakeRom.OLD_KASUTO_SIGN), Client.sign_bytes("AP$ITEM", 8))
-        self.assertEqual(len(rom.writes), 1)  # Old Kasuto already reads AP ITEM TOWN
+        self.assertEqual(rom.sign(FakeRom.MIDO_SIGN), Client.sign_bytes("HAMMER$TOWN", 4))
+        self.assertEqual(rom.sign(FakeRom.OLD_KASUTO_SIGN), Client.sign_bytes("GOB-DWR$HAMMER", 8))
+        self.assertEqual(len(rom.writes), 2)
 
     def test_longest_name_fits_and_keeps_town_byte(self) -> None:
         rom = FakeRom()
@@ -152,16 +154,21 @@ class TestTownSigns(unittest.TestCase):
         rom = FakeRom(mido_sign=old_sign)
         self.run_check(self.make_ctx({self.MIDO: (1, "Hammer"), self.OLD_KASUTO: (1, "Raft")}), rom)
         self.assertEqual(rom.sign(FakeRom.MIDO_SIGN), old_sign)
-        self.assertEqual(rom.sign(FakeRom.OLD_KASUTO_SIGN), Client.sign_bytes("RAFT", 8))
+        self.assertEqual(rom.sign(FakeRom.OLD_KASUTO_SIGN), Client.sign_bytes("RAFT$TOWN", 8))
 
     def test_signs_rewritten_after_rom_reload(self) -> None:
         rom = FakeRom()
         ctx = self.make_ctx({self.MIDO: (1, "Hammer"), self.OLD_KASUTO: (1, "Raft")})
         client = self.run_check(ctx, rom)
-        rom.put(FakeRom.MIDO_SIGN, Client.sign_bytes("AP$ITEM", 4))  # the ROM was reloaded
+        rom.put(FakeRom.MIDO_SIGN, Client.legacy_sign_bytes("AP$ITEM", 4))  # the ROM was reloaded
         client.next_sign_check = 0
         self.run_check(ctx, rom, client)
-        self.assertEqual(rom.sign(FakeRom.MIDO_SIGN), Client.sign_bytes("HAMMER", 4))
+        self.assertEqual(rom.sign(FakeRom.MIDO_SIGN), Client.sign_bytes("HAMMER$TOWN", 4))
+
+    def test_long_player_name_is_cut_to_fit(self) -> None:
+        rom = FakeRom()
+        self.run_check(self.make_ctx({self.MIDO: (3, "Hammer"), self.OLD_KASUTO: (1, "Raft")}), rom)
+        self.assertEqual(rom.sign(FakeRom.MIDO_SIGN), Client.sign_bytes("A_VERY_LONG$HAMMER", 4))
 
 
 class TestShortItemName(unittest.TestCase):
@@ -259,3 +266,23 @@ class TestHelpfulHints(unittest.TestCase):
         self.run_check(ctx, rom)
         self.assertEqual(rom.writes, [])
         self.assertEqual(ctx.sent, [])
+
+
+class TestOtherPlayerSigns(unittest.TestCase):
+    def test_short_form_keeps_the_full_name(self) -> None:
+        self.assertEqual(Client.other_player_sign(3, "Gob-ZORA", "Magic Container"), "GOB-ZORA$MC")
+        self.assertEqual(Client.other_player_sign(3, "Gob-ZORA", "Boomerang Upgrade"), "GOB-ZORA$BOOMER UP")
+        self.assertEqual(Client.other_player_sign(2, "Gob-DWR", "Power Bracelet"), "GOB-DWR$PB")
+
+    def test_full_item_name_used_when_it_fits(self) -> None:
+        self.assertEqual(Client.other_player_sign(2, "Gob-DWR", "Hammer"), "GOB-DWR$HAMMER")
+
+    def test_short_or_unusable_name_uses_player_number(self) -> None:
+        self.assertEqual(Client.other_player_sign(6, "ab", "1-Up"), "P6$1-UP")
+
+    def test_every_line_fits(self) -> None:
+        for name in ("A_Very_Long_Player_Name", "Gob-ZORA", "x"):
+            for item in ("Stones of Sunlight", "Magical Boomerang", "Erdrick's Token", "Progressive Sword"):
+                text = Client.other_player_sign(9, name, item)
+                self.assertIsNotNone(Client.sign_bytes(text, 1), text)
+                self.assertTrue(all(len(line) <= Client.SIGN_LINE_LENGTH for line in text.split("$")), text)

@@ -132,14 +132,69 @@ TEXT_SYMBOLS = {".": 0xCF, "/": 0xCE, ",": 0x9C, "!": 0x36, "?": 0x34, "*": 0x32
                 "_": 0xC5}
 
 
-def sign_bytes(name: str, town: int) -> bytes:
-    """The SIGN_SIZE bytes of a sign reading name + TOWN for the given town type."""
+def sign_bytes(text: str, town: int) -> bytes | None:
+    """The SIGN_SIZE bytes of a sign reading text for the given town type, or None if it doesn't fit."""
+    encoded = encode_text(text)
+    if len(encoded) > SIGN_SIZE - 1:
+        return None
+    return encoded + b"\xFF" * (SIGN_SIZE - 1 - len(encoded)) + bytes([town])
+
+
+def legacy_sign_bytes(name: str, town: int) -> bytes:
+    """A sign in the older "<NAME> TOWN" form: the Z2R app's placeholder ("AP ITEM TOWN") and what earlier
+    clients wrote."""
     text = encode_text(name + "$TOWN")
     return text + b"\xFF" * (SIGN_SIZE - 1 - len(text)) + bytes([town])
 
 
-# Every sign the client may find in place of a town's sign: the app's placeholder or one the client wrote earlier
-KNOWN_SIGNS = {town: {sign_bytes(name, town) for name in (*SIGN_NAMES.values(), OTHER_ITEM_SIGN)}
+SIGN_LINE_LENGTH = 11
+SIGN_MAX_CHARS = SIGN_SIZE - 2  # text characters that fit before the end byte and the town byte
+
+
+def short_player_name(name: str, room: int) -> str | None:
+    """A player name as text the game can show, cut to `room` characters (at most one line), or None if under 3."""
+    shown = "".join(c for c in name.upper() if "A" <= c <= "Z" or "0" <= c <= "9" or c in ".,!?-_ ").strip()
+    shown = shown[:min(SIGN_LINE_LENGTH, room)].rstrip()
+    return shown if len(shown) >= 3 else None
+
+
+def other_player_sign(player: int, player_name: str, item_name: str) -> str:
+    """Another player's item: "<player>$<item>", the name shortened to fit; "P<number>$<item>" when no name fits;
+    "AP$ITEM" for an item name that can't be shortened to fit."""
+    item = OTHER_ITEM_SIGN
+    for width in range(SIGN_LINE_LENGTH, 5, -1):
+        short = short_item_name(item_name, width)
+        if short is not None and len(short) <= 15:
+            item = short
+            break
+    choices = [item]
+    short_form = SIGN_SHORT_FORMS.get(item_name.upper())
+    if short_form and all(len(line) <= SIGN_LINE_LENGTH for line in short_form.split("$")):
+        choices.append(short_form)
+    # the choice that leaves the most of the player's name (the first on a tie)
+    name, item = max(((short_player_name(player_name, SIGN_MAX_CHARS - 1 - len(choice)), choice) for choice in choices),
+                     key=lambda pair: len(pair[0] or ""))
+    return f"{name or f'P{player}'}${item}"
+
+
+# One-line forms of two-line item names, used when the full form would cut the player's name
+SIGN_SHORT_FORMS = {"MAGIC CONTAINER": "MC", "HEART CONTAINER": "HC",
+                    "BLUE MAGIC JAR": "BLUE JAR", "RED MAGIC JAR": "RED JAR", "REFLECT SPELL": "REFLECT",
+                    "SHIELD SPELL": "SHIELD", "THUNDER SPELL": "THUNDER",
+                    # ZORA
+                    "ARROW UPGRADE": "ARROW UP", "BOMB UPGRADE": "BOMB UP", "BOOMERANG UPGRADE": "BOOMER UP", "POWER BRACELET": "PB",
+                    "BOOTS UPGRADE": "BOOTS UP", "CANDLE UPGRADE": "CANDLE UP", "RING UPGRADE": "RING UP",
+                    "SWORD UPGRADE": "SWORD UP", "MAGICAL BOOMERANG": "M BOOMERANG", "MAGICAL BOOTS": "M BOOTS",
+                    "MAGICAL SWORD": "M SWORD", "PEGASUS BOOTS": "P BOOTS", "SILVER ARROW": "SILVERS",
+                    "WOODEN ARROW": "ARROWS",
+                    # DWR
+                    "DRAGON'S SCALE": "D-SCALE", "ERDRICK'S ARMOR": "E-ARMOR", "ERDRICK'S SWORD": "E-SWORD",
+                    "ERDRICK'S TOKEN": "E-TOKEN", "FIGHTER'S RING": "F-RING", "STAFF OF RAIN": "STAFF",
+                    "STONES OF SUNLIGHT": "STONES"}
+
+
+# Signs the client may overwrite: the app's placeholder, or a sign an earlier client wrote in the "TOWN" form
+KNOWN_SIGNS = {town: {legacy_sign_bytes(name, town) for name in (*SIGN_NAMES.values(), OTHER_ITEM_SIGN)}
                for town in TOWN_SIGN_INDEXES}
 
 # Helpful hints. With helpful hints on, the Z2R app reserves HINT_SIZE bytes for each hint NPC reading "AP HINT",
@@ -169,20 +224,21 @@ WORD_SWAPS = {
 }
 
 
-def _fit(words: list[str]) -> list[str] | None:
-    """Pack words into lines of HINT_LINE_LENGTH characters, or None if a word is too long."""
+def _fit(words: list[str], width: int | None = None) -> list[str] | None:
+    """Pack words into lines of `width` (HINT_LINE_LENGTH) characters, or None if a word is too long."""
+    width = width or HINT_LINE_LENGTH
     lines: list[str] = []
     for word in words:
-        if len(word) > HINT_LINE_LENGTH:
+        if len(word) > width:
             return None
-        if lines and len(lines[-1]) + 1 + len(word) <= HINT_LINE_LENGTH:
+        if lines and len(lines[-1]) + 1 + len(word) <= width:
             lines[-1] += " " + word
         else:
             lines.append(word)
     return lines
 
 
-def short_item_name(name: str) -> str | None:
+def short_item_name(name: str, width: int | None = None) -> str | None:
     """An item name as at most two lines of HINT_LINE_LENGTH characters ($ between them), or None if it can't be
     made to fit and stay readable. Tries, in order: the full name; "Progressive X" as "X UPGRADE"; without filler
     words; with common words swapped for shorter forms; then cutting the longest words down a letter at a time."""
@@ -196,7 +252,7 @@ def short_item_name(name: str) -> str | None:
         words = words[1:] + ["UPGRADE"]
 
     def done(candidate: list[str]) -> str | None:
-        lines = _fit(candidate)
+        lines = _fit(candidate, width)
         return "$".join(lines) if lines and len(lines) <= 2 else None
 
     attempts = [words]
@@ -230,6 +286,7 @@ class Z2RClient(BizHawkClient):
     last_state: tuple[int, int, int] | None
     sent_events: set[str]
     signs_scouted: bool
+    signs_written: dict[int, bytes]
     next_sign_check: float
     hints_scouted: bool
     next_hint_check: float
@@ -244,6 +301,7 @@ class Z2RClient(BizHawkClient):
         self.last_state = None
         self.sent_events = set()
         self.signs_scouted = False
+        self.signs_written = {}
         self.next_sign_check = 0.0
         self.hints_scouted = False
         self.next_hint_check = 0.0
@@ -267,6 +325,7 @@ class Z2RClient(BizHawkClient):
         self.seed_mismatch_logged = False
         self.sent_events = set()
         self.signs_scouted = False
+        self.signs_written = {}
         self.next_sign_check = 0.0
         self.hints_scouted = False
         self.next_hint_check = 0.0
@@ -438,11 +497,13 @@ class Z2RClient(BizHawkClient):
         return towns
 
     def sign_name(self, ctx: "BizHawkClientContext", location_id: int) -> str:
+        """This slot's Z2R item by its sign name ("HAMMER"); another player's as "P<number>" and its short name."""
         item = ctx.locations_info[location_id]
         if item.player == ctx.slot:
             name = ctx.item_names.lookup_in_game(item.item, self.game)
-            return SIGN_NAMES.get(name, OTHER_ITEM_SIGN)
-        return OTHER_ITEM_SIGN
+            return SIGN_NAMES.get(name, OTHER_ITEM_SIGN) + "$TOWN"
+        return other_player_sign(item.player, ctx.player_names.get(item.player, ""),
+                                 ctx.item_names.lookup_in_slot(item.item, item.player))
 
     async def sign_check(self, ctx: "BizHawkClientContext") -> None:
         """Write the item each AP wizard gives onto its town sign. Repeats every SIGN_RECHECK_SECONDS, since reloading
@@ -477,11 +538,12 @@ class Z2RClient(BizHawkClient):
 
         writes = []
         for (address, location_id, town), now_bytes in zip(signs, current):
-            wanted = sign_bytes(self.sign_name(ctx, location_id), town)
-            # Only overwrite a sign the Z2R app left room for: its placeholder ("AP ITEM TOWN") or a sign this client
-            # wrote. A ROM made without the placeholders (an older app version) is left alone.
-            if now_bytes != wanted and now_bytes in KNOWN_SIGNS[town]:
+            wanted = sign_bytes(self.sign_name(ctx, location_id), town) or sign_bytes(OTHER_ITEM_SIGN + "$TOWN", town)
+            # Only overwrite a sign the Z2R app left room for: its placeholder ("AP ITEM TOWN"), a sign an earlier
+            # client wrote, or one this client wrote. A ROM made without the placeholders (an older app) is left alone.
+            if now_bytes != wanted and (now_bytes in KNOWN_SIGNS[town] or now_bytes == self.signs_written.get(address)):
                 writes.append((address, wanted, "PRG ROM"))
+                self.signs_written[address] = wanted
         if writes:
             await bizhawk.write(ctx.bizhawk_ctx, writes)
             logger.debug(f"Wrote {len(writes)} town sign(s)")
