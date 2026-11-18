@@ -195,4 +195,6 @@ class Z2RWorld(World):
             "new_kasuto_basement_requirement": self.options.new_kasuto_basement_requirement.value,
             "rom_seed": self.options.rom_seed.value,
             "rom_hash": self.options.hash.value,
+            "hint_slots": [list(slot) for slot in self.options.hint_slots.value],
+            "hint_places": dict(self.options.hint_places.value),
         }

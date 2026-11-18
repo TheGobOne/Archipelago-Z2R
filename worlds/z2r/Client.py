@@ -1,4 +1,5 @@
 import logging
+import random
 import time
 from typing import NamedTuple, TYPE_CHECKING
 
@@ -141,6 +142,81 @@ def sign_bytes(name: str, town: int) -> bytes:
 KNOWN_SIGNS = {town: {sign_bytes(name, town) for name in (*SIGN_NAMES.values(), OTHER_ITEM_SIGN)}
                for town in TOWN_SIGN_INDEXES}
 
+# Helpful hints. With helpful hints on, the Z2R app reserves HINT_SIZE bytes for each hint NPC reading "AP HINT",
+# padded with end bytes, with 0x80 + the hint number in the last byte (CustomTexts.ArchipelagoHintPlaceholder). The
+# YAML lists each hint's text indexes (hint_slots) and the start of a hint about each location (hint_places).
+HINT_SIZE = 52
+HINT_LINE_LENGTH = 10
+
+
+def hint_bytes(text: str, number: int) -> bytes | None:
+    """The HINT_SIZE bytes of a hint, or None if the text is too long to fit."""
+    encoded = encode_text(text)
+    if len(encoded) > HINT_SIZE - 1:
+        return None
+    return encoded + b"\xFF" * (HINT_SIZE - 1 - len(encoded)) + bytes([0x80 + number])
+
+
+# Words dropped from a long item name before anything is cut short
+FILLER_WORDS = {"THE", "OF", "A", "AN", "AND", "TO", "FOR", "WITH", "IN", "ON"}
+# Common words in item names and shorter forms that still read clearly
+WORD_SWAPS = {
+    "PROGRESSIVE": "PROG", "CONTAINER": "CONT", "CONTAINERS": "CONT", "UPGRADE": "UPGRD", "UPGRADES": "UPGRD",
+    "CAPACITY": "CAP", "EXPANSION": "EXP", "MAXIMUM": "MAX", "MINIMUM": "MIN", "LEGENDARY": "LEGEND",
+    "MAGICAL": "MAGIC", "COLLECTIBLE": "COLLECT", "FRAGMENT": "FRAG", "FRAGMENTS": "FRAGS", "ABILITY": "ABIL",
+    "CHARACTER": "CHAR", "EQUIPMENT": "EQUIP", "INCREASE": "UP", "DOUBLE": "2X", "TRIPLE": "3X",
+    "PROJECTILE": "SHOT", "ACCESSORY": "ACCESS", "TRANSFORMATION": "FORM", "TELEPORTER": "TELEPORT",
+}
+
+
+def _fit(words: list[str]) -> list[str] | None:
+    """Pack words into lines of HINT_LINE_LENGTH characters, or None if a word is too long."""
+    lines: list[str] = []
+    for word in words:
+        if len(word) > HINT_LINE_LENGTH:
+            return None
+        if lines and len(lines[-1]) + 1 + len(word) <= HINT_LINE_LENGTH:
+            lines[-1] += " " + word
+        else:
+            lines.append(word)
+    return lines
+
+
+def short_item_name(name: str) -> str | None:
+    """An item name as at most two lines of HINT_LINE_LENGTH characters ($ between them), or None if it can't be
+    made to fit and stay readable. Tries, in order: the full name; "Progressive X" as "X UPGRADE"; without filler
+    words; with common words swapped for shorter forms; then cutting the longest words down a letter at a time."""
+    # keep only what the game can show: A-Z, 0-9 and a few symbols; anything else splits words
+    cleaned = "".join(c if (c.isascii() and c.isalnum()) or c in ".,!?-" else " "
+                      for c in name.upper().replace("'", ""))
+    words = cleaned.split()
+    if not words:
+        return None
+    if len(words) > 1 and words[0] == "PROGRESSIVE":
+        words = words[1:] + ["UPGRADE"]
+
+    def done(candidate: list[str]) -> str | None:
+        lines = _fit(candidate)
+        return "$".join(lines) if lines and len(lines) <= 2 else None
+
+    attempts = [words]
+    kept = [w for w in words if w not in FILLER_WORDS] or words
+    attempts.append(kept)
+    attempts.append([WORD_SWAPS.get(w, w) for w in kept])
+    for attempt in attempts:
+        if result := done(attempt):
+            return result
+
+    # cut the longest word by one letter at a time, keeping at least 3 letters of each
+    words = attempts[-1][:]
+    while True:
+        longest = max(range(len(words)), key=lambda i: len(words[i]))
+        if len(words[longest]) <= 3:
+            return None
+        words[longest] = words[longest][:-1]
+        if result := done(words):
+            return result
+
 
 class Z2RClient(BizHawkClient):
     game = "Z2R"
@@ -155,6 +231,9 @@ class Z2RClient(BizHawkClient):
     sent_events: set[str]
     signs_scouted: bool
     next_sign_check: float
+    hints_scouted: bool
+    next_hint_check: float
+    hints_written: dict[int, bytes]
 
     def __init__(self) -> None:
         self.slot_name = ""
@@ -166,6 +245,9 @@ class Z2RClient(BizHawkClient):
         self.sent_events = set()
         self.signs_scouted = False
         self.next_sign_check = 0.0
+        self.hints_scouted = False
+        self.next_hint_check = 0.0
+        self.hints_written = {}
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
         try:
@@ -186,6 +268,9 @@ class Z2RClient(BizHawkClient):
         self.sent_events = set()
         self.signs_scouted = False
         self.next_sign_check = 0.0
+        self.hints_scouted = False
+        self.next_hint_check = 0.0
+        self.hints_written = {}
         ctx.game = self.game
         ctx.items_handling = 0b111
         ctx.want_slot_data = True
@@ -219,6 +304,7 @@ class Z2RClient(BizHawkClient):
 
         try:
             await self.sign_check(ctx)
+            await self.hint_check(ctx)
             event_bytes, mode_bytes = await bizhawk.read(
                 ctx.bizhawk_ctx, [(GAME_EVENT_ADDRESS, 1, RAM), (GAME_MODE_ADDRESS, 2, RAM)])
             event, mode, mode_current = event_bytes[0], mode_bytes[0], mode_bytes[1]
@@ -399,6 +485,74 @@ class Z2RClient(BizHawkClient):
         if writes:
             await bizhawk.write(ctx.bizhawk_ctx, writes)
             logger.debug(f"Wrote {len(writes)} town sign(s)")
+
+    @staticmethod
+    async def text_addresses(ctx: "BizHawkClientContext", indexes: list[int]) -> list[int]:
+        """The "PRG ROM" address of each text, through the text tables' pointers in bank 3."""
+        table_pointers = (await bizhawk.read(ctx.bizhawk_ctx, [(TEXT_TABLE_POINTERS, 4, "PRG ROM")]))[0]
+        west = BANK3_PRG + int.from_bytes(table_pointers[0:2], "little") - 0x8000
+        east = BANK3_PRG + int.from_bytes(table_pointers[2:4], "little") - 0x8000
+        entries = [west + i * 2 if i < WEST_TEXT_COUNT else east + (i - WEST_TEXT_COUNT) * 2 for i in indexes]
+        pointers = await bizhawk.read(ctx.bizhawk_ctx, [(entry, 2, "PRG ROM") for entry in entries])
+        return [BANK3_PRG + int.from_bytes(pointer, "little") - 0x8000 for pointer in pointers]
+
+    def hint_item_text(self, ctx: "BizHawkClientContext", location_id: int) -> str:
+        """The item part of a hint: a Z2R item of this slot by its sign name, another item by a short form of its name
+        that fits two lines, or AP ITEM."""
+        item = ctx.locations_info[location_id]
+        if item.player == ctx.slot:
+            name = ctx.item_names.lookup_in_game(item.item, self.game)
+            return SIGN_NAMES.get(name) or short_item_name(name) or OTHER_ITEM_SIGN
+        name = ctx.item_names.lookup_in_slot(item.item, item.player)
+        return short_item_name(name) or OTHER_ITEM_SIGN
+
+    def choose_hints(self, ctx: "BizHawkClientContext", count: int) -> list[int]:
+        """Pick the locations to hint at: progression items first, in an order fixed by the seed and slot so a
+        reconnect writes the same hints."""
+        candidates = sorted(LOCATION_NAME_TO_ID[name] for name in ctx.slot_data.get("hint_places", {})
+                            if name in LOCATION_NAME_TO_ID)
+        rng = random.Random(f"{ctx.seed_name}-{ctx.slot}-z2r-hints")
+        rng.shuffle(candidates)
+        candidates.sort(key=lambda location_id: not ctx.locations_info[location_id].flags & 0b001)
+        return candidates[:count]
+
+    async def hint_check(self, ctx: "BizHawkClientContext") -> None:
+        """Fill the helpful hint NPCs with hints about items in this world. Repeats every SIGN_RECHECK_SECONDS, since
+        reloading the ROM brings back the placeholders."""
+        now = time.monotonic()
+        if now < self.next_hint_check:
+            return
+        slots = ctx.slot_data.get("hint_slots", [])
+        places = ctx.slot_data.get("hint_places", {})
+        if not slots or not places:
+            self.next_hint_check = float("inf")
+            return
+        location_ids = [LOCATION_NAME_TO_ID[name] for name in places if name in LOCATION_NAME_TO_ID]
+        missing = [location_id for location_id in location_ids if location_id not in ctx.locations_info]
+        if missing:
+            if not self.hints_scouted:
+                await ctx.send_msgs([{"cmd": "LocationScouts", "locations": missing, "create_as_hint": 0}])
+                self.hints_scouted = True
+            return  # wait for the LocationInfo reply
+        self.next_hint_check = now + SIGN_RECHECK_SECONDS
+
+        names = {location_id: name for name, location_id in LOCATION_NAME_TO_ID.items()}
+        chosen = self.choose_hints(ctx, len(slots))
+        addresses = await self.text_addresses(ctx, [indexes[0] for indexes in slots])
+        current = await bizhawk.read(ctx.bizhawk_ctx, [(address, HINT_SIZE, "PRG ROM") for address in addresses])
+        writes = []
+        for number, (address, now_bytes, location_id) in enumerate(zip(addresses, current, chosen)):
+            text = places[names[location_id]] + self.hint_item_text(ctx, location_id)
+            wanted = hint_bytes(text, number)
+            if wanted is None or now_bytes == wanted:
+                continue
+            # Only overwrite the app's placeholder or a hint this client wrote. Other text is left alone.
+            if now_bytes == hint_bytes("AP HINT", number) or now_bytes == self.hints_written.get(address):
+                writes.append((address, wanted, "PRG ROM"))
+                self.hints_written[address] = wanted
+        if writes:
+            await bizhawk.write(ctx.bizhawk_ctx, writes)
+            logger.debug(f"Wrote {len(writes)} helpful hint(s)")
 
     async def consumable_check(self, ctx: "BizHawkClientContext", name: str) -> None:
         """Give one received copy of a consumable item per call, as long as the game can hold it."""

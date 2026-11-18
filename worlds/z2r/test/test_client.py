@@ -162,3 +162,100 @@ class TestTownSigns(unittest.TestCase):
         client.next_sign_check = 0
         self.run_check(ctx, rom, client)
         self.assertEqual(rom.sign(FakeRom.MIDO_SIGN), Client.sign_bytes("HAMMER", 4))
+
+
+class TestShortItemName(unittest.TestCase):
+    def test_short_names_fit_two_lines(self) -> None:
+        self.assertEqual(Client.short_item_name("Progressive Sword"), "SWORD$UPGRADE")
+        self.assertEqual(Client.short_item_name("Bow"), "BOW")
+        self.assertEqual(Client.short_item_name("Ice Beam"), "ICE BEAM")
+        self.assertEqual(Client.short_item_name("Link's Bow"), "LINKS BOW")
+
+    def test_too_many_words_gives_none(self) -> None:
+        self.assertIsNone(Client.short_item_name("Alpha Bravo Charlie Delta Echo Foxtrot"))
+        self.assertIsNone(Client.short_item_name("★"))
+
+
+class TestHelpfulHints(unittest.TestCase):
+    """Two hints: text 32 (west table) and texts 85 and 97 (east table, one NPC with two messages)."""
+    HINT_A, HINT_B = 0xA400, 0xA500  # CPU addresses in bank 3
+    GRASS, PALACE = "WEST_GRASS", "PALACE1:item1"
+
+    def make_rom(self) -> FakeRom:
+        rom = FakeRom()
+        rom.put_word(rom.prg(FakeRom.WEST_TABLE) + 32 * 2, self.HINT_A)
+        rom.put_word(rom.prg(FakeRom.EAST_TABLE) + (85 - 52) * 2, self.HINT_B)
+        rom.put_word(rom.prg(FakeRom.EAST_TABLE) + (97 - 52) * 2, self.HINT_B)
+        rom.put(self.HINT_A, Client.hint_bytes("AP HINT", 0))
+        rom.put(self.HINT_B, Client.hint_bytes("AP HINT", 1))
+        return rom
+
+    def hint(self, rom: FakeRom, cpu: int) -> bytes:
+        return bytes(rom.data[rom.prg(cpu):rom.prg(cpu) + Client.HINT_SIZE])
+
+    def make_ctx(self, items: dict[str, tuple[int, str, int]]) -> SimpleNamespace:
+        """items: location name -> (player, item name, flags)"""
+        ids = {name: ITEM_NAME_TO_ID.get(item, 999) for name, (_p, item, _f) in items.items()}
+        own = {ITEM_NAME_TO_ID[item]: item for _p, item, _f in items.values() if item in ITEM_NAME_TO_ID}
+        other = {999: [item for _p, item, _f in items.values() if item not in ITEM_NAME_TO_ID][0]} \
+            if any(item not in ITEM_NAME_TO_ID for _p, item, _f in items.values()) else {}
+        sent = []
+
+        async def send_msgs(msgs):
+            sent.extend(msgs)
+
+        return SimpleNamespace(
+            bizhawk_ctx=None, slot=1, seed_name="12345", sent=sent, send_msgs=send_msgs,
+            slot_data={"locations": {}, "hint_slots": [[32], [85, 97]],
+                       "hint_places": {self.GRASS: "go west to$find the$", self.PALACE: "horsehead$neighs$with the$"}},
+            locations_info={LOCATION_NAME_TO_ID[name]: SimpleNamespace(player=player, item=ids[name], flags=flags)
+                            for name, (player, _item, flags) in items.items()},
+            item_names=SimpleNamespace(lookup_in_game=lambda item, game: own[item],
+                                       lookup_in_slot=lambda item, slot: other[item]))
+
+    def run_check(self, ctx, rom: FakeRom, client: Client.Z2RClient | None = None) -> Client.Z2RClient:
+        client = client or Client.Z2RClient()
+        with mock.patch.object(Client.bizhawk, "read", rom.read), mock.patch.object(Client.bizhawk, "write", rom.write):
+            asyncio.run(client.hint_check(ctx))
+        return client
+
+    def written(self, rom: FakeRom) -> set[bytes]:
+        return {self.hint(rom, self.HINT_A)[:-1], self.hint(rom, self.HINT_B)[:-1]}
+
+    def test_hints_name_own_and_other_items(self) -> None:
+        rom = self.make_rom()
+        self.run_check(self.make_ctx({self.GRASS: (1, "Hammer", 1), self.PALACE: (2, "Progressive Sword", 1)}), rom)
+        expected = {Client.hint_bytes("go west to$find the$HAMMER", 0)[:-1],
+                    Client.hint_bytes("horsehead$neighs$with the$SWORD$UPGRADE", 0)[:-1]}
+        self.assertEqual(self.written(rom), expected)
+        self.assertEqual(self.hint(rom, self.HINT_A)[-1], 0x80)
+        self.assertEqual(self.hint(rom, self.HINT_B)[-1], 0x81)
+
+    def test_long_other_name_falls_back_to_ap_item(self) -> None:
+        rom = self.make_rom()
+        self.run_check(self.make_ctx({self.GRASS: (1, "Hammer", 1),
+                                      self.PALACE: (2, "Alpha Bravo Charlie Delta Echo Foxtrot", 1)}), rom)
+        self.assertIn(Client.hint_bytes("horsehead$neighs$with the$AP$ITEM", 0)[:-1], self.written(rom))
+
+    def test_progression_items_are_hinted_first(self) -> None:
+        rom = self.make_rom()
+        rom.put(self.HINT_B, Client.hint_bytes("I KNOW$NOTHING", 1))  # only one placeholder left: hint A
+        ctx = self.make_ctx({self.GRASS: (1, "Small Key", 0), self.PALACE: (1, "Hammer", 1)})
+        ctx.slot_data["hint_slots"] = [[32]]
+        self.run_check(ctx, rom)
+        self.assertEqual(self.hint(rom, self.HINT_A), Client.hint_bytes("horsehead$neighs$with the$HAMMER", 0))
+
+    def test_other_text_is_left_alone(self) -> None:
+        rom = self.make_rom()
+        rom.put(self.HINT_A, Client.encode_text("I KNOW$NOTHING").ljust(Client.HINT_SIZE, b"\x00"))
+        before = self.hint(rom, self.HINT_A)
+        self.run_check(self.make_ctx({self.GRASS: (1, "Hammer", 1), self.PALACE: (1, "Raft", 1)}), rom)
+        self.assertEqual(self.hint(rom, self.HINT_A), before)
+
+    def test_no_hint_slots_does_nothing(self) -> None:
+        rom = self.make_rom()
+        ctx = self.make_ctx({self.GRASS: (1, "Hammer", 1)})
+        ctx.slot_data["hint_slots"] = []
+        self.run_check(ctx, rom)
+        self.assertEqual(rom.writes, [])
+        self.assertEqual(ctx.sent, [])
