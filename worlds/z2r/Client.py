@@ -151,30 +151,26 @@ SIGN_LINE_LENGTH = 11
 SIGN_MAX_CHARS = SIGN_SIZE - 2  # text characters that fit before the end byte and the town byte
 
 
-def short_player_name(name: str, room: int) -> str | None:
-    """A player name as text the game can show, cut to `room` characters (at most one line), or None if under 3."""
+def short_player_name(name: str) -> str | None:
+    """A player name as text the game can show, cut off at one sign line (11 characters), or None if nothing shows."""
     shown = "".join(c for c in name.upper() if "A" <= c <= "Z" or "0" <= c <= "9" or c in ".,!?-_ ").strip()
-    shown = shown[:min(SIGN_LINE_LENGTH, room)].rstrip()
-    return shown if len(shown) >= 3 else None
+    return shown[:SIGN_LINE_LENGTH].rstrip() or None
 
 
 def other_player_sign(player: int, player_name: str, item_name: str) -> str:
-    """Another player's item: "<player>$<item>", the name shortened to fit; "P<number>$<item>" when no name fits;
-    "AP$ITEM" for an item name that can't be shortened to fit."""
-    item = OTHER_ITEM_SIGN
-    for width in range(SIGN_LINE_LENGTH, 5, -1):
-        short = short_item_name(item_name, width)
-        if short is not None and len(short) <= 15:
-            item = short
-            break
-    choices = [item]
-    short_form = SIGN_SHORT_FORMS.get(item_name.upper())
-    if short_form and all(len(line) <= SIGN_LINE_LENGTH for line in short_form.split("$")):
-        choices.append(short_form)
-    # the choice that leaves the most of the player's name (the first on a tie)
-    name, item = max(((short_player_name(player_name, SIGN_MAX_CHARS - 1 - len(choice)), choice) for choice in choices),
-                     key=lambda pair: len(pair[0] or ""))
-    return f"{name or f'P{player}'}${item}"
+    """Another player's item: "<player>$<item>", the name cut off at 11 characters ("P<number>" if nothing in it
+    shows). The item is its full name if it fits beside the name, else its short form (SIGN_SHORT_FORMS), else a
+    narrower short name, else "AP$ITEM"."""
+    name = short_player_name(player_name) or f"P{player}"
+    room = SIGN_MAX_CHARS - 1 - len(name)
+
+    def fits(text: str | None) -> bool:
+        return bool(text) and len(text) <= room and all(len(line) <= SIGN_LINE_LENGTH for line in text.split("$"))
+
+    candidates = [short_item_name(item_name, SIGN_LINE_LENGTH), SIGN_SHORT_FORMS.get(item_name.upper())]
+    candidates += [short_item_name(item_name, width) for width in range(SIGN_LINE_LENGTH - 1, 5, -1)]
+    item = next((text for text in candidates if fits(text)), OTHER_ITEM_SIGN)
+    return f"{name}${item}"
 
 
 # One-line forms of two-line item names, used when the full form would cut the player's name

@@ -278,7 +278,7 @@ class TestOtherPlayerSigns(unittest.TestCase):
         self.assertEqual(Client.other_player_sign(2, "Gob-DWR", "Hammer"), "GOB-DWR$HAMMER")
 
     def test_short_or_unusable_name_uses_player_number(self) -> None:
-        self.assertEqual(Client.other_player_sign(6, "ab", "1-Up"), "P6$1-UP")
+        self.assertEqual(Client.other_player_sign(6, "üü", "1-Up"), "P6$1-UP")
 
     def test_every_line_fits(self) -> None:
         for name in ("A_Very_Long_Player_Name", "Gob-ZORA", "x"):
