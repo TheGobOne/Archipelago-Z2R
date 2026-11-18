@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import NamedTuple, TYPE_CHECKING
 
 from NetUtils import ClientStatus
@@ -82,6 +83,64 @@ GAME_EVENT_ENDING = (3, 4)  # waking up Zelda, rolling the credits
 GAME_MODE_ADDRESS = 0x0736  # followed by GameModeCurrent at 0x0737
 GAME_MODES_IN_CONTROL = (0x05, 0x0B)  # overworld, side view (towns, palaces, caves, encounters)
 
+# Town signs. A wizard holding an AP item gets a sign reading "AP ITEM TOWN", padded with end bytes to SIGN_SIZE
+# bytes, with the town type in the last byte (CustomTexts.ArchipelagoSignPlaceholder in the Z2R app). Once the
+# multiworld is known, the client rewrites it in the "PRG ROM" domain with the item's name, or leaves "AP ITEM" for
+# another player's item. The game reads sign text from the ROM each time a sign is shown.
+SIGN_SIZE = 22
+SIGN_RECHECK_SECONDS = 5  # rewrite the signs this often in case the ROM was reloaded
+# The text tables are placed anywhere in bank 3, so they are found through their pointers at CPU $B423 (west) and
+# $B425 (east) in bank 3. Bank 3 starts at 0xC000 in "PRG ROM" and is mapped at CPU $8000.
+TEXT_TABLE_POINTERS = 0xF423
+BANK3_PRG = 0xC000
+WEST_TEXT_COUNT = 52
+# The text index of each town's sign, by town type (CustomTexts.TOWN_SIGN_INDEXES)
+TOWN_SIGN_INDEXES = {1: 11, 2: 20, 3: 29, 4: 41, 5: 62, 6: 76, 7: 86, 8: 94}
+# Wizard locations use flag address WIZARD_FLAGS, with one bit per town type, Rauru first
+WIZARD_FLAGS = 0x077A
+TOWN_BITS = [0x08, 0x04, 0x02, 0x01, 0x80, 0x40, 0x20, 0x10]
+# Sign text for each Z2R item ($ starts a new line), matching Collectable.EnglishText in the app
+SIGN_NAMES = {
+    "Candle": "CANDLE", "Glove": "GLOVE", "Raft": "RAFT", "Boots": "BOOTS", "Flute": "FLUTE", "Cross": "CROSS",
+    "Hammer": "HAMMER", "Magic Key": "MAGIC KEY", "Small Key": "SMALL KEY", "Small P-Bag": "P BAG",
+    "Large P-Bag": "P BAG", "Magic Container": "MAGIC$CONTAINER", "Heart Container": "HEART$CONTAINER",
+    "Blue Magic Jar": "BLUE JAR", "Red Magic Jar": "RED JAR", "1-Up": "LINK DOLL", "Child": "CHILD",
+    "Trophy": "TROPHY", "Medicine": "MEDICINE", "Upstab": "UP STAB", "Downstab": "DOWN STAB", "Mirror": "MIRROR",
+    "Bagu's Note": "BAGUS$LETTER", "Water": "WATER", "Shield Spell": "SHIELD$SPELL", "Jump Spell": "JUMP$SPELL",
+    "Life Spell": "LIFE$SPELL", "Fairy Spell": "FAIRY$SPELL", "Fire Spell": "FIRE$SPELL", "Dash Spell": "DASH$SPELL",
+    "Reflect Spell": "REFLECT$SPELL", "Spell Spell": "SPELL$SPELL", "Thunder Spell": "THUNDER$SPELL",
+}
+OTHER_ITEM_SIGN = "AP$ITEM"
+
+
+def encode_text(text: str) -> bytes:
+    """Encode text the way the Z2R app's Util.ToGameText does, with the end byte."""
+    out = bytearray()
+    for c in text.upper():
+        if "0" <= c <= "9":
+            out.append(ord(c) + 0xA0)
+        elif "A" <= c <= "Z":
+            out.append(ord(c) + 0x99)
+        elif c in TEXT_SYMBOLS:
+            out.append(TEXT_SYMBOLS[c])
+    out.append(0xFF)
+    return bytes(out)
+
+
+TEXT_SYMBOLS = {".": 0xCF, "/": 0xCE, ",": 0x9C, "!": 0x36, "?": 0x34, "*": 0x32, " ": 0xF4, "$": 0xFD, "-": 0xF6,
+                "_": 0xC5}
+
+
+def sign_bytes(name: str, town: int) -> bytes:
+    """The SIGN_SIZE bytes of a sign reading name + TOWN for the given town type."""
+    text = encode_text(name + "$TOWN")
+    return text + b"\xFF" * (SIGN_SIZE - 1 - len(text)) + bytes([town])
+
+
+# Every sign the client may find in place of a town's sign: the app's placeholder or one the client wrote earlier
+KNOWN_SIGNS = {town: {sign_bytes(name, town) for name in (*SIGN_NAMES.values(), OTHER_ITEM_SIGN)}
+               for town in TOWN_SIGN_INDEXES}
+
 
 class Z2RClient(BizHawkClient):
     game = "Z2R"
@@ -94,6 +153,8 @@ class Z2RClient(BizHawkClient):
     guards: list[tuple[int, list[int], str]]
     last_state: tuple[int, int, int] | None
     sent_events: set[str]
+    signs_scouted: bool
+    next_sign_check: float
 
     def __init__(self) -> None:
         self.slot_name = ""
@@ -103,6 +164,8 @@ class Z2RClient(BizHawkClient):
         self.guards = []
         self.last_state = None
         self.sent_events = set()
+        self.signs_scouted = False
+        self.next_sign_check = 0.0
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
         try:
@@ -121,6 +184,8 @@ class Z2RClient(BizHawkClient):
         self.rom_hash = "".join(self.decode_hash_tile(hash_tiles[i * 2]) for i in range(HASH_LENGTH))
         self.seed_mismatch_logged = False
         self.sent_events = set()
+        self.signs_scouted = False
+        self.next_sign_check = 0.0
         ctx.game = self.game
         ctx.items_handling = 0b111
         ctx.want_slot_data = True
@@ -153,6 +218,7 @@ class Z2RClient(BizHawkClient):
             return
 
         try:
+            await self.sign_check(ctx)
             event_bytes, mode_bytes = await bizhawk.read(
                 ctx.bizhawk_ctx, [(GAME_EVENT_ADDRESS, 1, RAM), (GAME_MODE_ADDRESS, 2, RAM)])
             event, mode, mode_current = event_bytes[0], mode_bytes[0], mode_bytes[1]
@@ -275,6 +341,64 @@ class Z2RClient(BizHawkClient):
             writes.append((MAGIC_REFILL_ADDRESS, [(desired[magic_address] << 4) & 0xFF], RAM))
         if writes:
             await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, self.guards)
+
+    def wizard_towns(self, ctx: "BizHawkClientContext") -> dict[int, int]:
+        """Location ID -> town type for each wizard location in this slot."""
+        towns: dict[int, int] = {}
+        for name, data in ctx.slot_data["locations"].items():
+            location_id = LOCATION_NAME_TO_ID.get(name)
+            if location_id is not None and data["address"] == WIZARD_FLAGS and data["mask"] in TOWN_BITS:
+                towns[location_id] = TOWN_BITS.index(data["mask"]) + 1
+        return towns
+
+    def sign_name(self, ctx: "BizHawkClientContext", location_id: int) -> str:
+        item = ctx.locations_info[location_id]
+        if item.player == ctx.slot:
+            name = ctx.item_names.lookup_in_game(item.item, self.game)
+            return SIGN_NAMES.get(name, OTHER_ITEM_SIGN)
+        return OTHER_ITEM_SIGN
+
+    async def sign_check(self, ctx: "BizHawkClientContext") -> None:
+        """Write the item each AP wizard gives onto its town sign. Repeats every SIGN_RECHECK_SECONDS, since reloading
+        the ROM brings back the placeholders."""
+        now = time.monotonic()
+        if now < self.next_sign_check:
+            return
+        towns = self.wizard_towns(ctx)
+        if not towns:
+            self.next_sign_check = float("inf")
+            return
+        missing = [location_id for location_id in towns if location_id not in ctx.locations_info]
+        if missing:
+            if not self.signs_scouted:
+                await ctx.send_msgs([{"cmd": "LocationScouts", "locations": missing, "create_as_hint": 0}])
+                self.signs_scouted = True
+            return  # wait for the LocationInfo reply
+        self.next_sign_check = now + SIGN_RECHECK_SECONDS
+
+        table_pointers = (await bizhawk.read(ctx.bizhawk_ctx, [(TEXT_TABLE_POINTERS, 4, "PRG ROM")]))[0]
+        west = BANK3_PRG + int.from_bytes(table_pointers[0:2], "little") - 0x8000
+        east = BANK3_PRG + int.from_bytes(table_pointers[2:4], "little") - 0x8000
+        entries = []
+        for location_id, town in towns.items():
+            index = TOWN_SIGN_INDEXES[town]
+            entries.append((west + index * 2 if index < WEST_TEXT_COUNT else east + (index - WEST_TEXT_COUNT) * 2,
+                            location_id, town))
+        pointers = await bizhawk.read(ctx.bizhawk_ctx, [(entry, 2, "PRG ROM") for entry, _, _ in entries])
+        signs = [(BANK3_PRG + int.from_bytes(pointer, "little") - 0x8000, location_id, town)
+                 for pointer, (_, location_id, town) in zip(pointers, entries)]
+        current = await bizhawk.read(ctx.bizhawk_ctx, [(address, SIGN_SIZE, "PRG ROM") for address, _, _ in signs])
+
+        writes = []
+        for (address, location_id, town), now_bytes in zip(signs, current):
+            wanted = sign_bytes(self.sign_name(ctx, location_id), town)
+            # Only overwrite a sign the Z2R app left room for: its placeholder ("AP ITEM TOWN") or a sign this client
+            # wrote. A ROM made without the placeholders (an older app version) is left alone.
+            if now_bytes != wanted and now_bytes in KNOWN_SIGNS[town]:
+                writes.append((address, wanted, "PRG ROM"))
+        if writes:
+            await bizhawk.write(ctx.bizhawk_ctx, writes)
+            logger.debug(f"Wrote {len(writes)} town sign(s)")
 
     async def consumable_check(self, ctx: "BizHawkClientContext", name: str) -> None:
         """Give one received copy of a consumable item per call, as long as the game can hold it."""
