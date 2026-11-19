@@ -57,13 +57,18 @@ def _clean(name: str) -> str:
     return " ".join(text.split())
 
 
-def spell_hint_text(item: str, owner: str, location: str, same_game: bool) -> str | None:
-    """The hint for a spell item of this slot that sits in `location` of `owner`'s world: three lines of
-    "ITEM AT", the owner's name (cut to 11 characters) and the location in up to two lines, joined with $ (the
-    text's line break). None when the location does not fit."""
-    name = _clean(owner)[:NAME_LENGTH].strip() or OTHER_PLAYER
+def spell_hint_text(item: str, owner: str, location: str, same_game: bool, own: bool = False) -> str | None:
+    """The hint for a spell item of this slot that sits in `location`. Another player's item: "<ITEM> AT", the owner's
+    name (cut to 11 characters), then the location. This slot's own item: "YOUR <ITEM> AT" then the location. The
+    location is in up to two lines; None when it does not fit."""
     where = HINT_LOCATION_NAMES.get(location, OTHER_GAME_LOCATION) if same_game else OTHER_GAME_LOCATION
     lines = textwrap.wrap(where, NAME_LENGTH, break_long_words=False)
     if len(lines) > 2 or any(len(line) > NAME_LENGTH for line in lines):
         return None
+    if own:
+        head = textwrap.wrap(f"YOUR {item.upper()} AT", NAME_LENGTH, break_long_words=False)
+        if len(head) > 2:
+            return None
+        return "$".join([*head, *lines])
+    name = _clean(owner)[:NAME_LENGTH].strip() or OTHER_PLAYER
     return "$".join([f"{item.upper()} AT", name, *lines])

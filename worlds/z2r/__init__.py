@@ -212,7 +212,8 @@ class Z2RWorld(World):
             if item is None or item.player != self.player or item.name not in SPELL_HINT_ITEMS:
                 continue
             same_game = self.multiworld.worlds[location.player].game == self.game
-            text = spell_hint_text(item.name, self.multiworld.get_player_name(location.player), location.name, same_game)
+            text = spell_hint_text(item.name, self.multiworld.get_player_name(location.player), location.name,
+                                   same_game, own=location.player == self.player)
             if text is not None:
                 texts[item.name] = text
         return texts
