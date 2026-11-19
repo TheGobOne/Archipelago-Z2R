@@ -26,7 +26,7 @@ class TestContainers(unittest.TestCase):
         fake = FakeRam(ram)
         names = {ITEM_NAME_TO_ID[name]: name for name in received}
         ctx = SimpleNamespace(
-            bizhawk_ctx=None, game="Z2R",
+            bizhawk_ctx=None, game="Z2R", team=0, slot=1, stored_data={}, set_notify=lambda *keys: None,
             items_received=[SimpleNamespace(item=ITEM_NAME_TO_ID[name]) for name in received],
             item_names=SimpleNamespace(lookup_in_game=lambda item, game: names[item]),
             slot_data={"start_magic_containers": 4, "start_heart_containers": 4,

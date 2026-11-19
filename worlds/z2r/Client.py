@@ -162,6 +162,7 @@ HUD_MESSAGE_WIDTH = 28
 HUD_MESSAGE_SECONDS = 5.0
 HUD_MESSAGE_SECONDS_BUSY = 2.5  # each message's time when more are waiting
 ERROR_HUD_SECONDS = 8.0  # how often an error is put back in the HUD row
+RECEIVED_CATCH_UP_LIMIT = 4  # more received items than this at once show as one count
 HUD_MESSAGE_STALE = 10.0  # a message older than this is dropped: it no longer matches what just happened
 BLANK_TILE = 0xF4
 PPU_BUFFER_LENGTH = 0x0301  # index of the buffer's $FF end; the game appends its own entries there
@@ -406,13 +407,12 @@ class Z2RClient(BizHawkClient):
     hints_written: dict[int, bytes]
     pickups_scout_retry: float
     next_item_text_check: float
-    pickup_messages: list[tuple[str, float]]
+    pickup_messages: list[tuple[str, float | None]]  # text, queued at (None: never stale)
     hud_message_until: float | None
     hud_message_text: str  # the message in the HUD now, to show again after a room change
     hud_message_left: float | None  # seconds it had left when a room change wiped it
     next_error_hud: float
     no_slots_logged: bool
-    received_seen: int | None
 
     def __init__(self) -> None:
         self.slot_name = ""
@@ -438,7 +438,6 @@ class Z2RClient(BizHawkClient):
         self.hud_message_left = None
         self.next_error_hud = 0.0
         self.no_slots_logged = False
-        self.received_seen = None
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
         try:
@@ -473,7 +472,6 @@ class Z2RClient(BizHawkClient):
         self.hud_message_left = None
         self.next_error_hud = 0.0
         self.no_slots_logged = False
-        self.received_seen = None
         ctx.game = self.game
         ctx.items_handling = 0b111
         ctx.want_slot_data = True
@@ -649,7 +647,8 @@ class Z2RClient(BizHawkClient):
             if await self.write_hud_message(ctx, ""):
                 self.hud_message_until = None
             return
-        while self.pickup_messages and now - self.pickup_messages[0][1] > HUD_MESSAGE_STALE:
+        while (self.pickup_messages and self.pickup_messages[0][1] is not None
+               and now - self.pickup_messages[0][1] > HUD_MESSAGE_STALE):
             self.pickup_messages.pop(0)
         if self.pickup_messages and await self.write_hud_message(ctx, self.pickup_messages[0][0]):
             self.hud_message_text = self.pickup_messages.pop(0)[0]
@@ -710,25 +709,35 @@ class Z2RClient(BizHawkClient):
         self.sent_events.update(reached)
         logger.info(f"Events reached: {', '.join(reached)}")
 
-    def announce_received(self, ctx: "BizHawkClientContext") -> None:
-        """Queue a HUD message for each item another player sent this slot since the last call. The first call after
-        connecting only counts the items, so the older history is not shown again."""
+    async def announce_received(self, ctx: "BizHawkClientContext") -> None:
+        """Queue a HUD message for each item another player sent this slot that hasn't been shown yet. How many
+        items have been announced is kept on the server, so items that arrived while another game was being played
+        show when this one connects, and a reconnect doesn't show them twice. More than RECEIVED_CATCH_UP_LIMIT
+        at once become one "GOT N ITEMS" line."""
+        key = f"z2r_hud_seen_{ctx.team}_{ctx.slot}"
+        ctx.set_notify(key)
+        if key not in ctx.stored_data:
+            return  # wait for the server's count
         total = len(ctx.items_received)
-        if self.received_seen is None or total < self.received_seen:
-            self.received_seen = total  # first sync, or the server sent the whole list again
+        seen = ctx.stored_data[key] or 0
+        if total == seen:
             return
-        for network_item in ctx.items_received[self.received_seen:]:
-            if network_item.player == ctx.slot:
-                continue  # found in this slot's own world: the pickup message covers it
-            item_name = ctx.item_names.lookup_in_slot(network_item.item, ctx.slot)
-            sender = ctx.player_names.get(network_item.player, "")
-            self.pickup_messages.append((received_message(item_name, sender), time.monotonic()))
-        self.received_seen = total
+        if total > seen:
+            new = [(ctx.item_names.lookup_in_slot(item.item, ctx.slot), ctx.player_names.get(item.player, ""))
+                   for item in ctx.items_received[seen:] if item.player != ctx.slot]  # own finds have pickup text
+            if len(new) > RECEIVED_CATCH_UP_LIMIT:
+                self.pickup_messages.append((f"GOT {len(new)} ITEMS FROM OTHERS", None))
+            else:
+                # no time stamp: these wait for side view however long that takes, instead of going stale
+                self.pickup_messages.extend((received_message(name, sender), None) for name, sender in new)
+        ctx.stored_data[key] = total
+        await ctx.send_msgs([{"cmd": "Set", "key": key, "default": 0, "want_reply": False,
+                              "operations": [{"operation": "replace", "value": total}]}])
 
     async def received_items_check(self, ctx: "BizHawkClientContext", flags: bytes) -> None:
         """Make the game's inventory match everything received. Every write is absolute, so it is safe to repeat
         after a reconnect or a save reload."""
-        self.announce_received(ctx)
+        await self.announce_received(ctx)
         received: dict[str, int] = {}
         for network_item in ctx.items_received:
             name = ctx.item_names.lookup_in_game(network_item.item, ctx.game)
