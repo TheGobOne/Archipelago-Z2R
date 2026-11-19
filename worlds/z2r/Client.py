@@ -161,11 +161,15 @@ HUD_MESSAGE_ADDRESS = 0x2022  # nametable row 1, column 2
 HUD_MESSAGE_WIDTH = 28
 HUD_MESSAGE_SECONDS = 5.0
 BLANK_TILE = 0xF4
+PPU_BUFFER_LENGTH = 0x0301  # index of the buffer's $FF end; the game appends its own entries there
+# The HUD's tiles exist in every CHR bank only for letters, digits, - and /; other symbols are dialog-font only
+HUD_CHARACTERS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/ ")
 
 
 def hud_message_bytes(text: str) -> bytes:
     """The PPU buffer entry that writes text (cut and padded to HUD_MESSAGE_WIDTH) into the HUD message row."""
-    tiles = encode_text(text)[:-1][:HUD_MESSAGE_WIDTH]
+    shown = "".join(c if c in HUD_CHARACTERS else " " for c in text.upper())
+    tiles = encode_text(shown)[:-1][:HUD_MESSAGE_WIDTH]
     tiles += bytes([BLANK_TILE]) * (HUD_MESSAGE_WIDTH - len(tiles))
     return bytes([HUD_MESSAGE_ADDRESS >> 8, HUD_MESSAGE_ADDRESS & 0xFF, HUD_MESSAGE_WIDTH]) + tiles + bytes([0xFF])
 
@@ -326,7 +330,12 @@ def hint_sentence(place: str, item_name: str, owner: str | None) -> str:
         lines = _fit(f"{head} {item}".split(), HINT_SENTENCE_WIDTH)
         if lines and len(lines) <= HINT_SENTENCE_LINES:
             return "$".join(lines)
-    return "$".join(_fit(f"{head} AP ITEM".split(), HINT_SENTENCE_WIDTH) or ["AP ITEM"])
+    # still too long (a long place and a long owner): drop the owner, then the place
+    for fallback in (f"{place} HAS AP ITEM", "AP ITEM"):
+        lines = _fit(fallback.split(), HINT_SENTENCE_WIDTH)
+        if lines and len(lines) <= HINT_SENTENCE_LINES:
+            return "$".join(lines)
+    return "AP ITEM"
 
 
 def short_item_name(name: str, width: int | None = None) -> str | None:
@@ -384,7 +393,7 @@ class Z2RClient(BizHawkClient):
     hints_scout_retry: float
     next_hint_check: float
     hints_written: dict[int, bytes]
-    pickups_scouted: bool
+    pickups_scout_retry: float
     next_item_text_check: float
     pickup_messages: list[str]
     hud_message_until: float | None
@@ -405,7 +414,7 @@ class Z2RClient(BizHawkClient):
         self.hints_scout_retry = 0.0
         self.next_hint_check = 0.0
         self.hints_written = {}
-        self.pickups_scouted = False
+        self.pickups_scout_retry = 0.0
         self.next_item_text_check = 0.0
         self.pickup_messages = []
         self.hud_message_until = None
@@ -435,7 +444,7 @@ class Z2RClient(BizHawkClient):
         self.hints_scout_retry = 0.0
         self.next_hint_check = 0.0
         self.hints_written = {}
-        self.pickups_scouted = False
+        self.pickups_scout_retry = 0.0
         self.next_item_text_check = 0.0
         self.pickup_messages = []
         self.hud_message_until = None
@@ -583,16 +592,17 @@ class Z2RClient(BizHawkClient):
 
     async def hud_message_check(self, ctx: "BizHawkClientContext", mode: int) -> None:
         """Show queued pickup messages in the HUD one at a time for HUD_MESSAGE_SECONDS each, then blank the row.
-        Scouts every location once so a pickup's item is known when it happens. Writes only in side view, and only
+        Scouts every location (again after a reconnect) so a pickup's item is known when it happens. Writes only in side view, and only
         when the game's PPU buffer is empty, so the game's own screen updates are never overwritten."""
-        if not self.pickups_scouted:
-            await ctx.send_msgs([{"cmd": "LocationScouts",
-                                  "locations": sorted(ctx.missing_locations | ctx.checked_locations),
-                                  "create_as_hint": 0}])
-            self.pickups_scouted = True
+        now = time.monotonic()
+        wanted = ctx.missing_locations | ctx.checked_locations
+        known = getattr(ctx, "locations_info", {})
+        # a reconnect clears what the server told us, so ask again (at most every SCOUT_RETRY_SECONDS) until known
+        if any(location_id not in known for location_id in wanted) and now >= self.pickups_scout_retry:
+            await ctx.send_msgs([{"cmd": "LocationScouts", "locations": sorted(wanted), "create_as_hint": 0}])
+            self.pickups_scout_retry = now + SCOUT_RETRY_SECONDS
         if mode != HUD_MODE:
             return
-        now = time.monotonic()
         if self.hud_message_until is not None:
             if now < self.hud_message_until:
                 return
@@ -605,8 +615,11 @@ class Z2RClient(BizHawkClient):
 
     async def write_hud_message(self, ctx: "BizHawkClientContext", text: str) -> bool:
         """Queue text for the HUD message row in the game's PPU buffer if it is empty. True if written."""
-        guards = [*self.guards, (PPU_BUFFER, [0xFF], RAM)]
-        return await bizhawk.guarded_write(ctx.bizhawk_ctx, [(PPU_BUFFER, hud_message_bytes(text), RAM)], guards)
+        entry = hud_message_bytes(text)
+        # the buffer must be empty; set its length to our entry's end so the game appends after it, not over it
+        guards = [*self.guards, (PPU_BUFFER_LENGTH, [0], RAM), (PPU_BUFFER, [0xFF], RAM)]
+        return await bizhawk.guarded_write(
+            ctx.bizhawk_ctx, [(PPU_BUFFER_LENGTH, bytes([len(entry) - 1]) + entry, RAM)], guards)
 
     async def event_check(self, ctx: "BizHawkClientContext", flags: bytes) -> None:
         """Publish the game events that have happened (such as PALACE1:crystal) to the server's data storage, under
