@@ -197,4 +197,5 @@ class Z2RWorld(World):
             "rom_hash": self.options.hash.value,
             "hint_slots": [list(slot) for slot in self.options.hint_slots.value],
             "hint_places": dict(self.options.hint_places.value),
+            "item_text_slots": dict(self.options.item_text_slots.value),
         }

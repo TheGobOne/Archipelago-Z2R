@@ -43,7 +43,7 @@ class HudMessageCheckTest(unittest.TestCase):
         async def send_msgs(msgs):
             sent.extend(msgs)
 
-        return SimpleNamespace(bizhawk_ctx=None, missing_locations={5, 3}, sent=sent, send_msgs=send_msgs)
+        return SimpleNamespace(bizhawk_ctx=None, missing_locations={5, 3}, checked_locations={4}, sent=sent, send_msgs=send_msgs)
 
     def run_check(self, client, ctx, mode, now, buffer_free=True) -> list:
         writes = []
@@ -69,12 +69,12 @@ class HudMessageCheckTest(unittest.TestCase):
         self.assertEqual(cleared[0][1], Client.hud_message_bytes(""))
         self.assertEqual(client.pickup_messages, [])
 
-    def test_scouts_every_missing_location_once(self) -> None:
+    def test_scouts_every_location_once(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []
         self.run_check(client, ctx, Client.HUD_MODE, 1.0)
         self.run_check(client, ctx, Client.HUD_MODE, 2.0)
-        self.assertEqual(ctx.sent, [{"cmd": "LocationScouts", "locations": [3, 5], "create_as_hint": 0}])
+        self.assertEqual(ctx.sent, [{"cmd": "LocationScouts", "locations": [3, 4, 5], "create_as_hint": 0}])
 
     def test_waits_outside_side_view_and_for_a_free_buffer(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
@@ -91,3 +91,79 @@ class HudMessageCheckTest(unittest.TestCase):
                               player_names={2: "Tetra"})
         self.assertEqual(client.pickup_text(ctx, 7), "SENT HOOKSHOT TO TETRA")
         self.assertIsNone(client.pickup_text(ctx, 8))
+
+
+class ItemDialogTest(unittest.TestCase):
+    def test_text_is_bounded_to_four_lines(self) -> None:
+        for own in (True, False):
+            text = Client.item_dialog_text("Progressive Ultra Mega Upgrade", "A Very Long Player", own)
+            self.assertLessEqual(len(text.split("$")), 4)
+            self.assertIsNotNone(Client.item_text_bytes(text, 0))
+
+    def test_own_item_says_your(self) -> None:
+        self.assertEqual(Client.item_dialog_text("Hammer", "Gob", True), "YOU GOT$YOUR$HAMMER")
+
+    def test_own_item_uses_its_sign_name(self) -> None:
+        self.assertEqual(Client.item_dialog_text("Magic Container", "Gob", True, "MAGIC$CONTAINER"),
+                         "YOU GOT$YOUR$MAGIC$CONTAINER")
+
+    def test_other_players_item(self) -> None:
+        self.assertEqual(Client.item_dialog_text("Silver Arrow", "Gob-DWR", False), "YOU SENT$SILVER$ARROW$TO GOB-DWR")
+
+    def test_long_player_name_is_cut_to_the_line(self) -> None:
+        self.assertEqual(Client.item_dialog_text("Raft", "A Very Long Player", False), "YOU SENT$RAFT$TO A VERY L")
+
+    def test_bytes_end_with_the_dialog_number(self) -> None:
+        self.assertEqual(Client.item_text_bytes("AP ITEM", 7)[-1], 0xC7)
+        self.assertEqual(len(Client.item_text_bytes("YOU GOT$YOUR$HAMMER", 3)), Client.ITEM_TEXT_SIZE)
+
+
+class ItemTextCheckTest(unittest.TestCase):
+    ADDRESS = 0xA700
+
+    def make_ctx(self, locations_info) -> SimpleNamespace:
+        from ..Locations import LOCATION_NAME_TO_ID
+        return SimpleNamespace(
+            bizhawk_ctx=None, slot=1, player_names={1: "GOB-Z2R", 2: "TETRA"},
+            slot_data={"item_text_slots": {"WEST_GRASS": [21, 4]}},
+            locations_info={LOCATION_NAME_TO_ID["WEST_GRASS"]: locations_info} if locations_info else {},
+            item_names=SimpleNamespace(lookup_in_game=lambda item, game: "Hammer",
+                                       lookup_in_slot=lambda item, player: "Silver Arrow"))
+
+    def run_check(self, ctx, memory, client) -> None:
+        async def read(_ctx, reads):
+            return [memory[address] for address, _size, _domain in reads]
+
+        async def write(_ctx, writes):
+            for address, data, _domain in writes:
+                memory[address] = data
+
+        async def addresses(_ctx, indexes):
+            return [self.ADDRESS for _ in indexes]
+
+        with mock.patch.object(Client.bizhawk, "read", read), mock.patch.object(Client.bizhawk, "write", write),                 mock.patch.object(Client.Z2RClient, "text_addresses", staticmethod(addresses)):
+            asyncio.run(client.item_text_check(ctx))
+
+    def test_own_item_replaces_the_placeholder(self) -> None:
+        memory = {self.ADDRESS: Client.item_text_bytes("AP ITEM", 4)}
+        self.run_check(self.make_ctx(SimpleNamespace(player=1, item=99)), memory, Client.Z2RClient())
+        self.assertEqual(memory[self.ADDRESS], Client.item_text_bytes("YOU GOT$YOUR$HAMMER", 4))
+
+    def test_other_players_item_replaces_the_placeholder(self) -> None:
+        memory = {self.ADDRESS: Client.item_text_bytes("AP ITEM", 4)}
+        self.run_check(self.make_ctx(SimpleNamespace(player=2, item=99)), memory, Client.Z2RClient())
+        self.assertEqual(memory[self.ADDRESS], Client.item_text_bytes("YOU SENT$SILVER$ARROW$TO TETRA", 4))
+
+    def test_other_text_is_left_alone(self) -> None:
+        other = Client.item_text_bytes("SOMETHING ELSE", 4)
+        memory = {self.ADDRESS: other}
+        self.run_check(self.make_ctx(SimpleNamespace(player=1, item=99)), memory, Client.Z2RClient())
+        self.assertEqual(memory[self.ADDRESS], other)
+
+    def test_waits_for_the_scout_reply(self) -> None:
+        placeholder = Client.item_text_bytes("AP ITEM", 4)
+        memory = {self.ADDRESS: placeholder}
+        client = Client.Z2RClient()
+        self.run_check(self.make_ctx(None), memory, client)
+        self.assertEqual(memory[self.ADDRESS], placeholder)
+        self.assertEqual(client.next_item_text_check, 0.0)

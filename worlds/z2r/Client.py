@@ -200,6 +200,32 @@ def pickup_message(item_name: str, player_name: str, own: bool) -> str:
     return f"SENT {_fit_item(item_name, room)} TO {player}"
 
 
+# Item dialogs: the Z2R app reserves ITEM_TEXT_SIZE bytes for the dialog a town location shows when it gives its item,
+# "AP ITEM" padded with end bytes, with 0xC0 + the dialog's number last (CustomTexts.ArchipelagoItemTextPlaceholder)
+ITEM_TEXT_SIZE = 49
+ITEM_TEXT_BASE = 0xC0
+ITEM_TEXT_LINE = 11
+
+
+def item_text_bytes(text: str, number: int) -> bytes | None:
+    """The ITEM_TEXT_SIZE bytes of an item dialog, or None if the text is too long to fit."""
+    encoded = encode_text(text)
+    if len(encoded) > ITEM_TEXT_SIZE - 1:
+        return None
+    padding = bytes([0xFF]) * (ITEM_TEXT_SIZE - 1 - len(encoded))
+    return encoded + padding + bytes([ITEM_TEXT_BASE + number])
+
+
+def item_dialog_text(item_name: str, player_name: str, own: bool, own_sign_name: str | None = None) -> str:
+    """The dialog for an item: "YOU GOT$YOUR$<item>" for this slot's item, else "YOU SENT$<item>$TO <player>" (the
+    player cut to the 8 characters left on the line). The item is two lines at most; AP$ITEM if it can't fit."""
+    item = (own_sign_name if own else None) or short_item_name(item_name, ITEM_TEXT_LINE) or OTHER_ITEM_SIGN
+    if own:
+        return f"YOU GOT$YOUR${item}"
+    player = (short_player_name(player_name) or "ANOTHER")[:ITEM_TEXT_LINE - len("TO ")].rstrip()
+    return f"YOU SENT${item}$TO {player}"
+
+
 def short_player_name(name: str) -> str | None:
     """A player name as text the game can show, cut off at one sign line (11 characters), or None if nothing shows."""
     shown = "".join(c for c in name.upper() if "A" <= c <= "Z" or "0" <= c <= "9" or c in ".,!?-_ ").strip()
@@ -359,6 +385,7 @@ class Z2RClient(BizHawkClient):
     next_hint_check: float
     hints_written: dict[int, bytes]
     pickups_scouted: bool
+    next_item_text_check: float
     pickup_messages: list[str]
     hud_message_until: float | None
 
@@ -379,6 +406,7 @@ class Z2RClient(BizHawkClient):
         self.next_hint_check = 0.0
         self.hints_written = {}
         self.pickups_scouted = False
+        self.next_item_text_check = 0.0
         self.pickup_messages = []
         self.hud_message_until = None
 
@@ -408,6 +436,7 @@ class Z2RClient(BizHawkClient):
         self.next_hint_check = 0.0
         self.hints_written = {}
         self.pickups_scouted = False
+        self.next_item_text_check = 0.0
         self.pickup_messages = []
         self.hud_message_until = None
         ctx.game = self.game
@@ -444,6 +473,7 @@ class Z2RClient(BizHawkClient):
         try:
             await self.sign_check(ctx)
             await self.hint_check(ctx)
+            await self.item_text_check(ctx)
             event_bytes, mode_bytes = await bizhawk.read(
                 ctx.bizhawk_ctx, [(GAME_EVENT_ADDRESS, 1, RAM), (GAME_MODE_ADDRESS, 2, RAM)])
             event, mode, mode_current = event_bytes[0], mode_bytes[0], mode_bytes[1]
@@ -498,7 +528,9 @@ class Z2RClient(BizHawkClient):
 
         for location_id in await ctx.check_locations(checked):
             ctx.locations_checked.add(location_id)
-            message = self.pickup_text(ctx, location_id)
+            # a location whose dialog names the item (item_text_slots) needs no HUD message
+            in_dialog = ctx.location_names.lookup_in_game(location_id) in ctx.slot_data.get("item_text_slots", {})
+            message = None if in_dialog else self.pickup_text(ctx, location_id)
             if message:
                 self.pickup_messages.append(message)
             logger.info(f"New Check: {ctx.location_names.lookup_in_game(location_id)} "
@@ -512,12 +544,50 @@ class Z2RClient(BizHawkClient):
         item_name = ctx.item_names.lookup_in_slot(info.item, info.player)
         return pickup_message(item_name, ctx.player_names.get(info.player, ""), info.player == ctx.slot)
 
+    async def item_text_check(self, ctx: "BizHawkClientContext") -> None:
+        """Fill the item dialogs (wizards, trainers, Saria's table, Nabooru's fountain, Bagu) with the item each
+        location holds, from slot data (item_text_slots). Only a placeholder or text this client wrote is
+        overwritten. Repeats every SIGN_RECHECK_SECONDS, since reloading the ROM brings the placeholders back."""
+        now = time.monotonic()
+        if now < self.next_item_text_check:
+            return
+        slots = ctx.slot_data.get("item_text_slots", {})
+        if not slots:
+            self.next_item_text_check = float("inf")
+            return
+        ready = [(name, index, number) for name, (index, number) in slots.items()
+                 if LOCATION_NAME_TO_ID.get(name) in ctx.locations_info]
+        if not ready:
+            return  # wait for the scout reply
+        self.next_item_text_check = now + SIGN_RECHECK_SECONDS
+        addresses = await self.text_addresses(ctx, [index for _name, index, _number in ready])
+        current = await bizhawk.read(ctx.bizhawk_ctx, [(address, ITEM_TEXT_SIZE, "PRG ROM") for address in addresses])
+        writes = []
+        for (name, _index, number), address, now_bytes in zip(ready, addresses, current):
+            info = ctx.locations_info[LOCATION_NAME_TO_ID[name]]
+            own = info.player == ctx.slot
+            if own:
+                item_name = ctx.item_names.lookup_in_game(info.item, self.game)
+            else:
+                item_name = ctx.item_names.lookup_in_slot(info.item, info.player)
+            text = item_dialog_text(item_name, ctx.player_names.get(info.player, ""), own, SIGN_NAMES.get(item_name))
+            wanted = item_text_bytes(text, number)
+            if wanted is None or now_bytes == wanted:
+                continue
+            if now_bytes == item_text_bytes("AP ITEM", number) or now_bytes == self.hints_written.get(address):
+                writes.append((address, wanted, "PRG ROM"))
+                self.hints_written[address] = wanted
+        if writes:
+            await bizhawk.write(ctx.bizhawk_ctx, writes)
+            logger.debug(f"Wrote {len(writes)} item dialog(s)")
+
     async def hud_message_check(self, ctx: "BizHawkClientContext", mode: int) -> None:
         """Show queued pickup messages in the HUD one at a time for HUD_MESSAGE_SECONDS each, then blank the row.
         Scouts every location once so a pickup's item is known when it happens. Writes only in side view, and only
         when the game's PPU buffer is empty, so the game's own screen updates are never overwritten."""
         if not self.pickups_scouted:
-            await ctx.send_msgs([{"cmd": "LocationScouts", "locations": sorted(ctx.missing_locations),
+            await ctx.send_msgs([{"cmd": "LocationScouts",
+                                  "locations": sorted(ctx.missing_locations | ctx.checked_locations),
                                   "create_as_hint": 0}])
             self.pickups_scouted = True
         if mode != HUD_MODE:
