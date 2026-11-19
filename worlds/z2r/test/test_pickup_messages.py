@@ -338,6 +338,15 @@ class ReceivedItemMessageTest(unittest.TestCase):
         self.announce()
         self.assertEqual(self.announce(), ["GOT ITEM5 FROM TETRA"])
 
+    def test_starting_item_says_started_with(self) -> None:
+        self.assertEqual(Client.received_message("Candle", ""), "STARTED WITH CANDLE")
+        self.assertLessEqual(len(Client.received_message("Progressive Ultra Mega Upgrade", "")), Client.HUD_MESSAGE_WIDTH)
+
+    def test_server_given_item_says_started_with(self) -> None:
+        self.ctx.player_names[0] = "Archipelago"
+        self.ctx.items_received = [SimpleNamespace(item=7, player=0)]
+        self.assertEqual(self.announce(), ["STARTED WITH ITEM7"])
+
     def test_own_world_item_is_not_queued(self) -> None:
         self.ctx.items_received = [SimpleNamespace(item=5, player=1)]
         self.assertEqual(self.announce(), [])

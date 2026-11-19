@@ -211,7 +211,10 @@ def pickup_message(item_name: str, player_name: str, own: bool) -> str:
 
 
 def received_message(item_name: str, player_name: str) -> str:
-    """"GOT <item> FROM <player>" for an item of this slot that another player sent, fitted to HUD_MESSAGE_WIDTH."""
+    """"GOT <item> FROM <player>" for an item of this slot that another player sent, fitted to HUD_MESSAGE_WIDTH.
+    An empty player name means the server gave it (a starting item): "STARTED WITH <item>"."""
+    if not player_name:
+        return f"STARTED WITH {_fit_item(item_name, HUD_MESSAGE_WIDTH - len('STARTED WITH '))}"
     player = short_player_name(player_name) or "ANOTHER PLAYER"
     room = HUD_MESSAGE_WIDTH - len("GOT  FROM ") - len(player)
     return f"GOT {_fit_item(item_name, room)} FROM {player}"
@@ -744,8 +747,9 @@ class Z2RClient(BizHawkClient):
         if total == seen:
             return
         if total > seen:
-            new = [(ctx.item_names.lookup_in_slot(item.item, ctx.slot), ctx.player_names.get(item.player, ""))
+            new = [(ctx.item_names.lookup_in_slot(item.item, ctx.slot), ctx.player_names.get(item.player, "") if item.player else "")
                    for item in ctx.items_received[seen:] if item.player != ctx.slot]  # own finds have pickup text
+            # the server ("Archipelago", player 0) gives starting items: they have no sender
             if len(new) > RECEIVED_CATCH_UP_LIMIT:
                 self.pickup_messages.append((f"GOT {len(new)} ITEMS FROM OTHERS", None))
             else:
