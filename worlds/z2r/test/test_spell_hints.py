@@ -28,6 +28,17 @@ class SpellHintTextTest(unittest.TestCase):
         self.assertEqual(spell_hint_text("Mirror", "Tetra", "Tantegel Treasury Chest 1", False),
                          "MIRROR AT$TETRA$ANOTHER$GAME")
 
+    def test_dwr_location_uses_its_short_name(self) -> None:
+        self.assertEqual(spell_hint_text("Medicine", "Gob-DWR", "Garin's Grave Chest 3", False, game="DWR"),
+                         "MEDICINE AT$GOB-DWR$GRAVE 3")
+
+    def test_every_other_game_name_fits_two_lines(self) -> None:
+        from ..spell_hints import OTHER_GAME_LOCATION_NAMES
+        for game, names in OTHER_GAME_LOCATION_NAMES.items():
+            for location in names:
+                with self.subTest(game=game, location=location):
+                    self.assertIsNotNone(spell_hint_text("Upstab", "Gob-DWR", location, False, game=game))
+
     def test_every_location_name_fits_two_lines(self) -> None:
         for location in HINT_LOCATION_NAMES:
             with self.subTest(location=location):
