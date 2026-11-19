@@ -9,6 +9,7 @@ import worlds._bizhawk as bizhawk
 from worlds._bizhawk.client import BizHawkClient
 from .Items import CONTAINER_ITEMS, ITEM_TABLE
 from .Locations import LOCATION_NAME_TO_ID
+from . import item_sprites
 from .place_names import PLACE_NAMES
 from .spell_hints import SPELL_HINT_ITEMS
 
@@ -433,6 +434,10 @@ class Z2RClient(BizHawkClient):
     hud_message_left: float | None  # seconds it had left when a room change wiped it
     next_error_hud: float
     no_slots_logged: bool
+    sprite_banks: list[int] | None  # CHR banks holding the AP item tiles, found at the first side view
+    sprite_logo: bytes  # the AP item tiles as the ROM has them
+    sprite_sources: dict[int, bytes]  # the ROM's item tiles, by CHR address
+    sprite_shown: bytes | None  # what the AP item tiles were last set to
 
     def __init__(self) -> None:
         self.slot_name = ""
@@ -459,6 +464,10 @@ class Z2RClient(BizHawkClient):
         self.hud_message_left = None
         self.next_error_hud = 0.0
         self.no_slots_logged = False
+        self.sprite_banks = None
+        self.sprite_logo = b""
+        self.sprite_sources = {}
+        self.sprite_shown = None
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
         try:
@@ -494,6 +503,10 @@ class Z2RClient(BizHawkClient):
         self.hud_message_left = None
         self.next_error_hud = 0.0
         self.no_slots_logged = False
+        self.sprite_banks = None
+        self.sprite_logo = b""
+        self.sprite_sources = {}
+        self.sprite_shown = None
         ctx.game = self.game
         ctx.items_handling = 0b111
         ctx.want_slot_data = True
@@ -559,6 +572,7 @@ class Z2RClient(BizHawkClient):
 
             await self.location_check(ctx, flags)
             await self.hud_message_check(ctx, mode)
+            await self.item_sprite_check(ctx, mode)
             await self.event_check(ctx, flags)
             if game_complete & GAME_COMPLETE_MASK and not ctx.finished_game:
                 await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
@@ -678,6 +692,62 @@ class Z2RClient(BizHawkClient):
             self.hud_message_text = self.pickup_messages.pop(0)[0]
             busy = bool(self.pickup_messages)
             self.hud_message_until = now + (HUD_MESSAGE_SECONDS_BUSY if busy else HUD_MESSAGE_SECONDS)
+
+    async def item_sprite_check(self, ctx: "BizHawkClientContext", mode: int) -> None:
+        """In a side view room whose AP item is one of this slot's own Z2R items, draw it as that item; anywhere else
+        keep the AP logo. See item_sprites."""
+        if mode != HUD_MODE:
+            return
+        if self.sprite_banks is None and not await self.find_sprite_banks(ctx):
+            return
+        room = await bizhawk.guarded_read(ctx.bizhawk_ctx, [
+            (item_sprites.WORLD_NUMBER, 1, RAM), (item_sprites.REGION_NUMBER, 1, RAM),
+            (item_sprites.MAP_NUMBER, 1, RAM), (item_sprites.LINK_PAGE, 1, RAM)], self.guards)
+        if room is None:
+            return
+        world, region, map_number, link_page = (value[0] for value in room)
+        wanted = self.sprite_logo
+        known = getattr(ctx, "locations_info", {})
+        for name in item_sprites.room_locations(ctx.slot_data["locations"], world, region, map_number, link_page):
+            info = known.get(LOCATION_NAME_TO_ID.get(name))
+            if info is None:
+                break  # not scouted yet: keep the logo
+            if info.player == ctx.slot:
+                sprite = item_sprites.item_sprite(ctx.item_names.lookup_in_game(info.item, self.game),
+                                                  self.sprite_sources)
+                wanted = sprite or self.sprite_logo
+            break
+        if wanted == self.sprite_shown:
+            return
+        writes = [(bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET, wanted, item_sprites.CHR_DOMAIN)
+                  for bank in self.sprite_banks]
+        room_guards = [(item_sprites.WORLD_NUMBER, [world], RAM), (item_sprites.REGION_NUMBER, [region], RAM),
+                       (item_sprites.MAP_NUMBER, [map_number], RAM)]
+        if await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, [*self.guards, *room_guards]):
+            self.sprite_shown = wanted
+
+    async def find_sprite_banks(self, ctx: "BizHawkClientContext") -> bool:
+        """Read the AP item tiles from each CHR bank and the ROM's item tiles. The banks holding the same tiles as
+        bank REFERENCE_BANK (the 1-up's home, CHR.ONEUP in the app) are the ones the AP item can be drawn from."""
+        size = await bizhawk.get_memory_size(ctx.bizhawk_ctx, item_sprites.CHR_DOMAIN)
+        banks = range(size // item_sprites.BANK_SIZE)
+        if item_sprites.REFERENCE_BANK not in banks:
+            self.sprite_banks = []
+            return False
+        reads = [(bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET, item_sprites.TILE_BYTES,
+                  item_sprites.CHR_DOMAIN) for bank in banks]
+        reads += [(address, item_sprites.TILE_BYTES, item_sprites.CHR_DOMAIN)
+                  for address in item_sprites.SOURCE_ADDRESSES]
+        data = [bytes(value) for value in await bizhawk.read(ctx.bizhawk_ctx, reads)]
+        ap_tiles, sources = data[:len(banks)], data[len(banks):]
+        self.sprite_sources = dict(zip(item_sprites.SOURCE_ADDRESSES, sources))
+        reference = ap_tiles[item_sprites.REFERENCE_BANK]
+        self.sprite_banks = [bank for bank, tiles in zip(banks, ap_tiles) if tiles == reference]
+        # The client may have been restarted while an item was drawn: then the CHR has that item, not the logo
+        drawn = {item_sprites.item_sprite(name, self.sprite_sources) for name in item_sprites.ITEM_TILES}
+        self.sprite_logo = item_sprites.AP_LOGO if reference in drawn else reference
+        self.sprite_shown = reference
+        return True
 
     async def show_error_on_hud(self, ctx: "BizHawkClientContext", text: str) -> None:
         """Put an error in the HUD row (every ERROR_HUD_SECONDS, since a redraw erases it), for problems the player
