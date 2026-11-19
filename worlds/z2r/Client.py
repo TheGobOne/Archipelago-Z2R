@@ -9,6 +9,7 @@ import worlds._bizhawk as bizhawk
 from worlds._bizhawk.client import BizHawkClient
 from .Items import CONTAINER_ITEMS, ITEM_TABLE
 from .Locations import LOCATION_NAME_TO_ID
+from .place_names import PLACE_NAMES
 
 if TYPE_CHECKING:
     from worlds._bizhawk.context import BizHawkClientContext
@@ -280,6 +281,26 @@ def _fit(words: list[str], width: int | None = None) -> list[str] | None:
         else:
             lines.append(word)
     return lines
+
+
+HINT_SENTENCE_WIDTH = 11  # the dialog box line, as on the town signs
+HINT_SENTENCE_LINES = 4
+
+
+def hint_sentence(place: str, item_name: str, owner: str | None) -> str:
+    """"<PLACE> HAS YOUR <ITEM>." for this slot's item (owner None), else "<PLACE> HAS <OWNER>S <ITEM>." (the font
+    has no apostrophe). Word-wrapped into at most four 11-character lines. A long item name falls back to its sign
+    short form, then AP ITEM."""
+    head = f"{place} HAS YOUR" if owner is None else f"{place} HAS {owner}S"
+    candidates = [item_name, SIGN_SHORT_FORMS.get(item_name.upper(), ""), "AP ITEM"]
+    for candidate in candidates:
+        item = _shown(candidate)
+        if not item:
+            continue
+        lines = _fit(f"{head} {item}".split(), HINT_SENTENCE_WIDTH)
+        if lines and len(lines) <= HINT_SENTENCE_LINES:
+            return "$".join(lines)
+    return "$".join(_fit(f"{head} AP ITEM".split(), HINT_SENTENCE_WIDTH) or ["AP ITEM"])
 
 
 def short_item_name(name: str, width: int | None = None) -> str | None:
@@ -666,6 +687,18 @@ class Z2RClient(BizHawkClient):
         name = ctx.item_names.lookup_in_slot(item.item, item.player)
         return short_item_name(name) or OTHER_ITEM_SIGN
 
+    def hint_text(self, ctx: "BizHawkClientContext", location_id: int, location_name: str) -> str:
+        """A helpful hint naming the place and item: "P1 HAS YOUR <ITEM>." for this slot's own item, else
+        "P1 HAS <PLAYER>S <ITEM>."."""
+        info = ctx.locations_info[location_id]
+        if info.player == ctx.slot:
+            name = ctx.item_names.lookup_in_game(info.item, self.game)
+        else:
+            name = ctx.item_names.lookup_in_slot(info.item, info.player)
+        owner = None if info.player == ctx.slot else (
+            (short_player_name(ctx.player_names.get(info.player, "")) or f"P{info.player}")[:10].rstrip())
+        return hint_sentence(PLACE_NAMES.get(location_name, "SOMEWHERE"), name, owner)
+
     def choose_hints(self, ctx: "BizHawkClientContext", count: int) -> list[int]:
         """Pick the locations to hint at: progression items first, in an order fixed by the seed and slot so a
         reconnect writes the same hints."""
@@ -712,7 +745,7 @@ class Z2RClient(BizHawkClient):
         for address, now_bytes in zip(addresses, current):
             number = numbers[address]
             location_id = chosen[number]
-            text = places[names[location_id]] + self.hint_item_text(ctx, location_id)
+            text = self.hint_text(ctx, location_id, names[location_id])
             wanted = hint_bytes(text, number)
             if wanted is None or now_bytes == wanted:
                 continue

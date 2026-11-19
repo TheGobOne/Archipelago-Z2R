@@ -230,6 +230,7 @@ class TestHelpfulHints(unittest.TestCase):
 
         return SimpleNamespace(
             bizhawk_ctx=None, slot=1, seed_name="12345", sent=sent, send_msgs=send_msgs,
+            player_names={1: "GOB-Z2R", 2: "TETRA"},
             slot_data={"locations": {}, "hint_slots": [[32], [85, 97]],
                        "hint_places": {self.GRASS: "go west to$find the$", self.PALACE: "horsehead$neighs$with the$"}},
             locations_info={LOCATION_NAME_TO_ID[name]: SimpleNamespace(player=player, item=ids[name], flags=flags)
@@ -249,8 +250,8 @@ class TestHelpfulHints(unittest.TestCase):
     def test_hints_name_own_and_other_items(self) -> None:
         rom = self.make_rom()
         self.run_check(self.make_ctx({self.GRASS: (1, "Hammer", 1), self.PALACE: (2, "Progressive Sword", 1)}), rom)
-        expected = {Client.hint_bytes("go west to$find the$HAMMER", 0)[:-1],
-                    Client.hint_bytes("horsehead$neighs$with the$SWORD$UPGRADE", 0)[:-1]}
+        expected = {Client.hint_bytes("GRASS TILE$HAS YOUR$HAMMER", 0)[:-1],
+                    Client.hint_bytes("P1 HAS$TETRAS$PROGRESSIVE$SWORD", 1)[:-1]}
         self.assertEqual(self.written(rom), expected)
         self.assertEqual(self.hint(rom, self.HINT_A)[-1], 0x80)
         self.assertEqual(self.hint(rom, self.HINT_B)[-1], 0x81)
@@ -259,7 +260,7 @@ class TestHelpfulHints(unittest.TestCase):
         rom = self.make_rom()
         self.run_check(self.make_ctx({self.GRASS: (1, "Hammer", 1),
                                       self.PALACE: (2, "Alpha Bravo Charlie Delta Echo Foxtrot", 1)}), rom)
-        self.assertIn(Client.hint_bytes("horsehead$neighs$with the$AP$ITEM", 0)[:-1], self.written(rom))
+        self.assertIn(Client.hint_bytes("P1 HAS$TETRAS AP$ITEM", 1)[:-1], self.written(rom))
 
     def test_progression_items_are_hinted_first(self) -> None:
         rom = self.make_rom()
@@ -267,7 +268,7 @@ class TestHelpfulHints(unittest.TestCase):
         ctx = self.make_ctx({self.GRASS: (1, "Small Key", 0), self.PALACE: (1, "Hammer", 1)})
         ctx.slot_data["hint_slots"] = [[32]]
         self.run_check(ctx, rom)
-        self.assertEqual(self.hint(rom, self.HINT_A), Client.hint_bytes("horsehead$neighs$with the$HAMMER", 0))
+        self.assertEqual(self.hint(rom, self.HINT_A), Client.hint_bytes("P1 HAS YOUR$HAMMER", 0))
 
     def test_other_text_is_left_alone(self) -> None:
         rom = self.make_rom()
