@@ -293,38 +293,61 @@ class ErrorDisplayTest(unittest.TestCase):
 
 
 class ReceivedItemMessageTest(unittest.TestCase):
+    KEY = "z2r_hud_seen_0_1"
+
     def setUp(self) -> None:
+        self.sent = []
+
+        async def send_msgs(msgs):
+            self.sent.extend(msgs)
+
         self.ctx = SimpleNamespace(
-            slot=1,
-            items_received=[],
+            slot=1, team=0, items_received=[], stored_data={self.KEY: None},
+            set_notify=lambda *keys: None, send_msgs=send_msgs,
             item_names=SimpleNamespace(lookup_in_slot=lambda item, slot: f"ITEM{item}"),
-            player_names={2: "Tetra", 1: "Gob-Z2R"},
+            player_names={2: "Tetra", 1: "Gob-Z2R", 3: "Gob-DWR"},
         )
         self.client = Client.Z2RClient()
+
+    def announce(self) -> list[str]:
+        asyncio.run(self.client.announce_received(self.ctx))
+        return [text for text, _ in self.client.pickup_messages]
 
     def test_received_message_text(self) -> None:
         self.assertEqual(Client.received_message("Silver Arrow", "Tetra"), "GOT SILVER ARROW FROM TETRA")
 
-    def test_first_sync_is_not_announced(self) -> None:
+    def test_waits_for_the_servers_count(self) -> None:
+        self.ctx.stored_data = {}
         self.ctx.items_received = [SimpleNamespace(item=5, player=2)]
-        self.client.announce_received(self.ctx)
-        self.assertEqual(self.client.pickup_messages, [])
+        self.assertEqual(self.announce(), [])
+        self.assertEqual(self.sent, [])
 
-    def test_new_item_from_another_player_is_queued(self) -> None:
-        self.client.announce_received(self.ctx)
+    def test_item_that_arrived_while_away_is_shown(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=15, player=3)]  # sent while DWR was being played
+        self.assertEqual(self.announce(), ["GOT ITEM15 FROM GOB-DWR"])
+        self.assertEqual(self.sent[-1]["operations"], [{"operation": "replace", "value": 1}])
+
+    def test_items_already_shown_are_not_shown_again(self) -> None:
+        self.ctx.stored_data[self.KEY] = 2
+        self.ctx.items_received = [SimpleNamespace(item=5, player=2), SimpleNamespace(item=6, player=2)]
+        self.assertEqual(self.announce(), [])
+
+    def test_new_item_is_queued_once(self) -> None:
+        self.announce()
         self.ctx.items_received.append(SimpleNamespace(item=5, player=2))
-        self.client.announce_received(self.ctx)
-        self.assertEqual([text for text, _ in self.client.pickup_messages], ["GOT ITEM5 FROM TETRA"])
+        self.announce()
+        self.assertEqual(self.announce(), ["GOT ITEM5 FROM TETRA"])
 
     def test_own_world_item_is_not_queued(self) -> None:
-        self.client.announce_received(self.ctx)
-        self.ctx.items_received.append(SimpleNamespace(item=5, player=1))
-        self.client.announce_received(self.ctx)
-        self.assertEqual(self.client.pickup_messages, [])
+        self.ctx.items_received = [SimpleNamespace(item=5, player=1)]
+        self.assertEqual(self.announce(), [])
+        self.assertEqual(self.ctx.stored_data[self.KEY], 1)
 
-    def test_resent_list_is_not_announced_again(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=5, player=2), SimpleNamespace(item=6, player=2)]
-        self.client.announce_received(self.ctx)
-        self.ctx.items_received = [SimpleNamespace(item=5, player=2)]  # reconnect: the list starts over
-        self.client.announce_received(self.ctx)
-        self.assertEqual(self.client.pickup_messages, [])
+    def test_many_at_once_become_one_count(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=i, player=2) for i in range(7)]
+        self.assertEqual(self.announce(), ["GOT 7 ITEMS FROM OTHERS"])
+
+    def test_received_messages_wait_for_side_view(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=5, player=2)]
+        self.announce()
+        self.assertIsNone(self.client.pickup_messages[0][1])  # never dropped as stale
