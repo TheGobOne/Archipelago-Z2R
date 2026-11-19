@@ -1,0 +1,69 @@
+"""Spell item hints in Archipelago mode: where a spell item of this slot is, for the Z2R app's hint NPCs.
+
+The Z2R app reserves a placeholder for each of these items (CustomTexts.ArchipelagoSpellHintPlaceholder), in the
+order below, and the YAML lists the text index of each as spell_hint_slots. The client writes the text from
+slot data (spell_hints) over the placeholder.
+"""
+import textwrap
+
+# The order of the Z2R app's ARCHIPELAGO_SPELL_HINT_ITEMS: each placeholder's last byte is 0xA0 + its position
+SPELL_HINT_ITEMS = ("Trophy", "Medicine", "Child", "Mirror", "Water", "Downstab", "Upstab")
+
+# The name of each location in Z2R's own world, as the hint says it (two lines of 11 characters). Locations of
+# other games are named "ANOTHER GAME".
+HINT_LOCATION_NAMES: dict[str, str] = {
+    "WEST_CAVE_MAGIC_CONTAINER": "MC CAVE",
+    "WEST_CAVE_HEART_CONTAINER": "HC CAVE",
+    "WEST_CAVE_MEDICINE": "MEDICINE CAVE",
+    "WEST_CAVE_PBAG": "PILLAR PBAG CAVE",
+    "WEST_CAVE_TROPHY": "TROPHY CAVE",
+    "WEST_GRASS": "GRASS TILE",
+    "WEST_TOWN_RAURU:wizard": "RAURU",
+    "WEST_TOWN_RUTO:wizard": "RUTO",
+    "WEST_TOWN_SARIA_NORTH:table": "SARIA TABLE",
+    "WEST_TOWN_SARIA_NORTH:wizard": "SARIA",
+    "WEST_TOWN_MIDO:wizard": "MIDO",
+    "WEST_TOWN_MIDO:downstab_man": "DOWNSTAB GUY",
+    "BAGU": "BAGU",
+    "DM_HAMMER_CAVE": "DM HAMMER CAVE",
+    "DM_SPEC_ROCK": "DM SPEC ROCK",
+    "EAST_WATER": "WATER TILE",
+    "EAST_DESERT": "DESERT TILE",
+    "EAST_CAVE_PBAG1": "SUNKEN PBAG CAVE",
+    "EAST_CAVE_PBAG2": "RISEN PBAG CAVE",
+    "EAST_TOWN_NABOORU:fountain": "NABOORU FOUNTAIN",
+    "EAST_TOWN_NABOORU:wizard": "NABOORU",
+    "EAST_TOWN_DARUNIA:wizard": "DARUNIA",
+    "EAST_TOWN_DARUNIA:upstab_man": "UPSTAB GUY",
+    "EAST_TOWN_NEW_KASUTO:ganon_granny": "NK GRANNY",
+    "EAST_TOWN_NEW_KASUTO:wizard": "NEW KASUTO",
+    "EAST_TOWN_NEW_KASUTO:spell_tower": "NK TOWER",
+    "EAST_TOWN_OLD_KASUTO:wizard": "OLD KASUTO",
+    "MI_CHILD_DROP": "MAZE LONG DROP",
+    "MI_MAGIC_CONTAINER_DROP": "MAZE SHORT DROP",
+    **{f"PALACE{palace}:{part}": f"PALACE{palace} {part.upper()}"
+       for palace in range(1, 7) for part in ("item1", "item2", "item3", "crystal")},
+}
+
+OTHER_GAME_LOCATION = "ANOTHER GAME"
+OTHER_PLAYER = "ANOTHER PLAYER"
+NAME_LENGTH = 11
+ALLOWED = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?-_")
+
+
+def _clean(name: str) -> str:
+    """A name as the game can show it: upper case, the characters the font has, no extra spaces."""
+    text = "".join(c if c in ALLOWED else " " for c in name.upper())
+    return " ".join(text.split())
+
+
+def spell_hint_text(item: str, owner: str, location: str, same_game: bool) -> str | None:
+    """The hint for a spell item of this slot that sits in `location` of `owner`'s world: three lines of
+    "ITEM AT", the owner's name (cut to 11 characters) and the location in up to two lines, joined with $ (the
+    text's line break). None when the location does not fit."""
+    name = _clean(owner)[:NAME_LENGTH].strip() or OTHER_PLAYER
+    where = HINT_LOCATION_NAMES.get(location, OTHER_GAME_LOCATION) if same_game else OTHER_GAME_LOCATION
+    lines = textwrap.wrap(where, NAME_LENGTH, break_long_words=False)
+    if len(lines) > 2 or any(len(line) > NAME_LENGTH for line in lines):
+        return None
+    return "$".join([f"{item.upper()} AT", name, *lines])
