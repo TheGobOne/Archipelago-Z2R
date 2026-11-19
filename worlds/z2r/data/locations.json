@@ -48,5 +48,12 @@
   "PALACE6:item3",
   "GREAT_PALACE:item1",
   "GREAT_PALACE:item2",
-  "GREAT_PALACE:item3"
+  "GREAT_PALACE:item3",
+  "PALACE1:crystal",
+  "PALACE2:crystal",
+  "PALACE3:crystal",
+  "PALACE4:crystal",
+  "PALACE5:crystal",
+  "PALACE6:crystal",
+  "GREAT_PALACE:crystal"
 ]

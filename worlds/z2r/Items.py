@@ -52,6 +52,8 @@ ITEM_TABLE: dict[str, ItemData] = {
     "Thunder Spell": ItemData(0x23, PROG, 0x0782),
     # The app replaces Fire with Dash when "ReplaceFireWithDash" is set, so Dash uses the Fire spell flag
     "Dash Spell": ItemData(0x24, PROG, 0x077F),
+    # Given by the game itself at the palace crystal locations. Not in the item pool and not delivered by flag.
+    "Crystal": ItemData(0x30, PROG),
     # Filler is not delivered yet
     "Blue Magic Jar": ItemData(0x10, FILLER),
     "Red Magic Jar": ItemData(0x11, FILLER),
@@ -72,7 +74,7 @@ CONTAINER_ITEMS: dict[str, tuple[int, int]] = {
 FILLER_ITEMS = ["Blue Magic Jar", "Red Magic Jar", "1-Up", "Small P-Bag", "Large P-Bag", "Small Key"]
 
 # Order used to decide which items to keep when there are fewer locations than items
-POOL_PRIORITY = [name for name, data in ITEM_TABLE.items() if data.classification == PROG] + \
+POOL_PRIORITY = [name for name, data in ITEM_TABLE.items() if data.classification == PROG and name != "Crystal"] + \
                 [name for name, data in ITEM_TABLE.items() if data.classification == USEFUL]
 
 # Requirement tokens in the Z2R requirements file that are single items
