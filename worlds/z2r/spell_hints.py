@@ -46,6 +46,28 @@ HINT_LOCATION_NAMES: dict[str, str] = {
 }
 
 OTHER_GAME_LOCATION = "ANOTHER GAME"
+
+# Short names of other games' locations, by game, for hints about an item in another world. A location not listed
+# here is named OTHER_GAME_LOCATION.
+OTHER_GAME_LOCATION_NAMES: dict[str, dict[str, str]] = {
+    "DWR": {
+        **{f"Tantegel Treasury Chest {n}": f"TANT {n}" for n in range(1, 5)},
+        "Tantegel Basement Chest": "TANT BASEMENT",
+        **{f"Throne Room Chest {n}": f"THRONE {n}" for n in range(1, 4)},
+        "Rimuldar Chest": "RIMULDAR",
+        **{f"Garinham Chest {n}": f"GARINHAM {n}" for n in range(1, 4)},
+        **{f"Charlock Throne Room Chest {n}": f"CHARLOCK {n}" for n in range(1, 7)},
+        "Charlock Cave Chest": "CHAR BAD SPOT",
+        "Staff of Rain Shrine Chest": "STAFF CAVE",
+        **{f"Garin's Grave Chest {n}": f"GRAVE {n}" for n in range(1, 6)},
+        **{f"Mountain Cave Chest {n}": f"MOUNTAIN {n}" for n in range(1, 6)},
+        "Erdrick's Cave Chest": "ERD/TABLET CAVE",
+        "Overworld Search Spot": "COORDS",
+        "Kol Search Spot": "KOL",
+        "Hauksness Search Spot": "HAUKSNESS",
+        "Rescue Gwaelin": "GWAELIN",
+    },
+}
 OTHER_PLAYER = "ANOTHER PLAYER"
 NAME_LENGTH = 11
 ALLOWED = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?-_")
@@ -57,11 +79,13 @@ def _clean(name: str) -> str:
     return " ".join(text.split())
 
 
-def spell_hint_text(item: str, owner: str, location: str, same_game: bool, own: bool = False) -> str | None:
+def spell_hint_text(item: str, owner: str, location: str, same_game: bool, own: bool = False,
+                    game: str = "") -> str | None:
     """The hint for a spell item of this slot that sits in `location`. Another player's item: "<ITEM> AT", the owner's
     name (cut to 11 characters), then the location. This slot's own item: "YOUR <ITEM> AT" then the location. The
     location is in up to two lines; None when it does not fit."""
-    where = HINT_LOCATION_NAMES.get(location, OTHER_GAME_LOCATION) if same_game else OTHER_GAME_LOCATION
+    where = (HINT_LOCATION_NAMES.get(location, OTHER_GAME_LOCATION) if same_game
+             else OTHER_GAME_LOCATION_NAMES.get(game, {}).get(location, OTHER_GAME_LOCATION))
     lines = textwrap.wrap(where, NAME_LENGTH, break_long_words=False)
     if len(lines) > 2 or any(len(line) > NAME_LENGTH for line in lines):
         return None

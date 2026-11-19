@@ -213,7 +213,8 @@ class Z2RWorld(World):
                 continue
             same_game = self.multiworld.worlds[location.player].game == self.game
             text = spell_hint_text(item.name, self.multiworld.get_player_name(location.player), location.name,
-                                   same_game, own=location.player == self.player)
+                                   same_game, own=location.player == self.player,
+                                   game=self.multiworld.worlds[location.player].game)
             if text is not None:
                 texts[item.name] = text
         return texts
