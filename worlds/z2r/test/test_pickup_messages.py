@@ -262,3 +262,41 @@ class ErrorDisplayTest(unittest.TestCase):
             client.note_missing_slots("hint")
             client.note_missing_slots("item dialog")
         self.assertEqual(len(logs.records), 1)
+
+
+class ReceivedItemMessageTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.ctx = SimpleNamespace(
+            slot=1,
+            items_received=[],
+            item_names=SimpleNamespace(lookup_in_slot=lambda item, slot: f"ITEM{item}"),
+            player_names={2: "Tetra", 1: "Gob-Z2R"},
+        )
+        self.client = Client.Z2RClient()
+
+    def test_received_message_text(self) -> None:
+        self.assertEqual(Client.received_message("Silver Arrow", "Tetra"), "GOT SILVER ARROW FROM TETRA")
+
+    def test_first_sync_is_not_announced(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=5, player=2)]
+        self.client.announce_received(self.ctx)
+        self.assertEqual(self.client.pickup_messages, [])
+
+    def test_new_item_from_another_player_is_queued(self) -> None:
+        self.client.announce_received(self.ctx)
+        self.ctx.items_received.append(SimpleNamespace(item=5, player=2))
+        self.client.announce_received(self.ctx)
+        self.assertEqual([text for text, _ in self.client.pickup_messages], ["GOT ITEM5 FROM TETRA"])
+
+    def test_own_world_item_is_not_queued(self) -> None:
+        self.client.announce_received(self.ctx)
+        self.ctx.items_received.append(SimpleNamespace(item=5, player=1))
+        self.client.announce_received(self.ctx)
+        self.assertEqual(self.client.pickup_messages, [])
+
+    def test_resent_list_is_not_announced_again(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=5, player=2), SimpleNamespace(item=6, player=2)]
+        self.client.announce_received(self.ctx)
+        self.ctx.items_received = [SimpleNamespace(item=5, player=2)]  # reconnect: the list starts over
+        self.client.announce_received(self.ctx)
+        self.assertEqual(self.client.pickup_messages, [])

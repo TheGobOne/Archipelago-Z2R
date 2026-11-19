@@ -208,6 +208,13 @@ def pickup_message(item_name: str, player_name: str, own: bool) -> str:
     return f"SENT {_fit_item(item_name, room)} TO {player}"
 
 
+def received_message(item_name: str, player_name: str) -> str:
+    """"GOT <item> FROM <player>" for an item of this slot that another player sent, fitted to HUD_MESSAGE_WIDTH."""
+    player = short_player_name(player_name) or "ANOTHER PLAYER"
+    room = HUD_MESSAGE_WIDTH - len("GOT  FROM ") - len(player)
+    return f"GOT {_fit_item(item_name, room)} FROM {player}"
+
+
 # Item dialogs: the Z2R app reserves ITEM_TEXT_SIZE bytes for the dialog a town location shows when it gives its item,
 # "AP ITEM" padded with end bytes, with 0xC0 + the dialog's number last (CustomTexts.ArchipelagoItemTextPlaceholder)
 ITEM_TEXT_SIZE = 49
@@ -403,6 +410,7 @@ class Z2RClient(BizHawkClient):
     hud_message_until: float | None
     next_error_hud: float
     no_slots_logged: bool
+    received_seen: int | None
 
     def __init__(self) -> None:
         self.slot_name = ""
@@ -426,6 +434,7 @@ class Z2RClient(BizHawkClient):
         self.hud_message_until = None
         self.next_error_hud = 0.0
         self.no_slots_logged = False
+        self.received_seen = None
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
         try:
@@ -458,6 +467,7 @@ class Z2RClient(BizHawkClient):
         self.hud_message_until = None
         self.next_error_hud = 0.0
         self.no_slots_logged = False
+        self.received_seen = None
         ctx.game = self.game
         ctx.items_handling = 0b111
         ctx.want_slot_data = True
@@ -683,9 +693,25 @@ class Z2RClient(BizHawkClient):
         self.sent_events.update(reached)
         logger.info(f"Events reached: {', '.join(reached)}")
 
+    def announce_received(self, ctx: "BizHawkClientContext") -> None:
+        """Queue a HUD message for each item another player sent this slot since the last call. The first call after
+        connecting only counts the items, so the older history is not shown again."""
+        total = len(ctx.items_received)
+        if self.received_seen is None or total < self.received_seen:
+            self.received_seen = total  # first sync, or the server sent the whole list again
+            return
+        for network_item in ctx.items_received[self.received_seen:]:
+            if network_item.player == ctx.slot:
+                continue  # found in this slot's own world: the pickup message covers it
+            item_name = ctx.item_names.lookup_in_slot(network_item.item, ctx.slot)
+            sender = ctx.player_names.get(network_item.player, "")
+            self.pickup_messages.append((received_message(item_name, sender), time.monotonic()))
+        self.received_seen = total
+
     async def received_items_check(self, ctx: "BizHawkClientContext", flags: bytes) -> None:
         """Make the game's inventory match everything received. Every write is absolute, so it is safe to repeat
         after a reconnect or a save reload."""
+        self.announce_received(ctx)
         received: dict[str, int] = {}
         for network_item in ctx.items_received:
             name = ctx.item_names.lookup_in_game(network_item.item, ctx.game)
