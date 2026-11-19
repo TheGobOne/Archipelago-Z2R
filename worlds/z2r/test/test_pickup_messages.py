@@ -131,6 +131,34 @@ class HudMessageCheckTest(unittest.TestCase):
         self.run_check(client, ctx, Client.HUD_MODE, 12.5)
         self.assertEqual(len(ctx.sent), 2)  # once, then again after SCOUT_RETRY_SECONDS
 
+    def test_room_change_shows_the_message_again(self) -> None:
+        client, ctx = Client.Z2RClient(), self.make_ctx()
+        client.guards = []
+        client.pickup_messages = [("GOT HAMMER", 10.0)]
+        self.run_check(client, ctx, Client.HUD_MODE, 10.0)   # shown, 5 s
+        self.run_check(client, ctx, 0x05, 11.0)              # room change at 1 s: 4 s left
+        again = self.run_check(client, ctx, Client.HUD_MODE, 18.0)
+        self.assertEqual(again[0][1][1:], Client.hud_message_bytes("GOT HAMMER"))
+        self.assertEqual(client.hud_message_until, 22.0)
+
+    def test_room_change_near_the_end_still_shows_long_enough_to_read(self) -> None:
+        client, ctx = Client.Z2RClient(), self.make_ctx()
+        client.guards = []
+        client.pickup_messages = [("GOT HAMMER", 10.0)]
+        self.run_check(client, ctx, Client.HUD_MODE, 10.0)
+        self.run_check(client, ctx, 0x05, 14.9)
+        self.run_check(client, ctx, Client.HUD_MODE, 20.0)
+        self.assertEqual(client.hud_message_until, 20.0 + Client.HUD_MESSAGE_SECONDS_BUSY)
+
+    def test_room_change_after_the_time_is_up_shows_nothing(self) -> None:
+        client, ctx = Client.Z2RClient(), self.make_ctx()
+        client.guards = []
+        client.pickup_messages = [("GOT HAMMER", 10.0)]
+        self.run_check(client, ctx, Client.HUD_MODE, 10.0)
+        self.run_check(client, ctx, 0x05, 15.5)  # time was up, the blank just wasn't written yet
+        self.assertEqual(self.run_check(client, ctx, Client.HUD_MODE, 20.0), [])
+        self.assertIsNone(client.hud_message_until)
+
     def test_waits_outside_side_view_and_for_a_free_buffer(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []

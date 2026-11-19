@@ -425,6 +425,8 @@ class Z2RClient(BizHawkClient):
     next_item_text_check: float
     pickup_messages: list[tuple[str, float]]
     hud_message_until: float | None
+    hud_message_text: str  # the message in the HUD now, to show again after a room change
+    hud_message_left: float | None  # seconds it had left when a room change wiped it
     next_error_hud: float
     no_slots_logged: bool
     received_seen: int | None
@@ -450,6 +452,8 @@ class Z2RClient(BizHawkClient):
         self.next_item_text_check = 0.0
         self.pickup_messages = []
         self.hud_message_until = None
+        self.hud_message_text = ""
+        self.hud_message_left = None
         self.next_error_hud = 0.0
         self.no_slots_logged = False
         self.received_seen = None
@@ -484,6 +488,8 @@ class Z2RClient(BizHawkClient):
         self.next_item_text_check = 0.0
         self.pickup_messages = []
         self.hud_message_until = None
+        self.hud_message_text = ""
+        self.hud_message_left = None
         self.next_error_hud = 0.0
         self.no_slots_logged = False
         self.received_seen = None
@@ -646,6 +652,17 @@ class Z2RClient(BizHawkClient):
             await ctx.send_msgs([{"cmd": "LocationScouts", "locations": sorted(wanted), "create_as_hint": 0}])
             self.pickups_scout_retry = now + SCOUT_RETRY_SECONDS
         if mode != HUD_MODE:
+            if self.hud_message_until is not None:
+                # a room change redraws the HUD and wipes the message: show it again in the next room, for the time
+                # it had left (at least HUD_MESSAGE_SECONDS_BUSY, so it can be read)
+                if now < self.hud_message_until:
+                    self.hud_message_left = max(self.hud_message_until - now, HUD_MESSAGE_SECONDS_BUSY)
+                self.hud_message_until = None
+            return
+        if self.hud_message_left is not None:
+            if await self.write_hud_message(ctx, self.hud_message_text):
+                self.hud_message_until = now + self.hud_message_left
+                self.hud_message_left = None
             return
         if self.hud_message_until is not None:
             if now < self.hud_message_until:
@@ -656,7 +673,7 @@ class Z2RClient(BizHawkClient):
         while self.pickup_messages and now - self.pickup_messages[0][1] > HUD_MESSAGE_STALE:
             self.pickup_messages.pop(0)
         if self.pickup_messages and await self.write_hud_message(ctx, self.pickup_messages[0][0]):
-            self.pickup_messages.pop(0)
+            self.hud_message_text = self.pickup_messages.pop(0)[0]
             busy = bool(self.pickup_messages)
             self.hud_message_until = now + (HUD_MESSAGE_SECONDS_BUSY if busy else HUD_MESSAGE_SECONDS)
 
