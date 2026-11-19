@@ -27,6 +27,23 @@ class PickupMessageTextTest(unittest.TestCase):
     def test_long_item_without_short_form_is_cut_at_a_word(self) -> None:
         self.assertEqual(Client.pickup_message("Golden Feather Cape", "Gob-DWR", False), "SENT GOLDEN TO GOB-DWR")
 
+    def test_hud_text_keeps_only_hud_glyphs(self) -> None:
+        self.assertEqual(Client.hud_message_bytes("GOT A!?,_.B"), Client.hud_message_bytes("GOT A     B"))
+
+    def test_long_place_and_owner_hint_stays_four_lines(self) -> None:
+        for owner in ("ABCDEFGHIJ", "GOB Z2R", None):
+            text = Client.hint_sentence("NABOORU FOUNTAIN", "Hammer", owner)
+            self.assertLessEqual(len(text.split("$")), 4, text)
+
+    def test_every_place_hint_fits_four_lines(self) -> None:
+        from ..place_names import PLACE_NAMES
+        for place in set(PLACE_NAMES.values()):
+            for owner in ("ABCDEFGHIJ", None):
+                with self.subTest(place=place, owner=owner):
+                    text = Client.hint_sentence(place, "Progressive Ultra Mega Upgrade", owner)
+                    self.assertLessEqual(len(text.split("$")), 4, text)
+                    self.assertTrue(all(len(line) <= 11 for line in text.split("$")), text)
+
     def test_buffer_entry_layout(self) -> None:
         data = Client.hud_message_bytes("GOT HAMMER")
         self.assertEqual(data[:3], bytes([0x20, 0x22, Client.HUD_MESSAGE_WIDTH]))
@@ -63,10 +80,12 @@ class HudMessageCheckTest(unittest.TestCase):
         client.guards = []
         client.pickup_messages = ["GOT HAMMER"]
         shown = self.run_check(client, ctx, Client.HUD_MODE, 100.0)
-        self.assertEqual(shown[0][1], Client.hud_message_bytes("GOT HAMMER"))
+        entry = Client.hud_message_bytes("GOT HAMMER")
+        self.assertEqual(shown[0][0], Client.PPU_BUFFER_LENGTH)
+        self.assertEqual(shown[0][1], bytes([len(entry) - 1]) + entry)
         self.assertEqual(self.run_check(client, ctx, Client.HUD_MODE, 104.9), [])
         cleared = self.run_check(client, ctx, Client.HUD_MODE, 105.0)
-        self.assertEqual(cleared[0][1], Client.hud_message_bytes(""))
+        self.assertEqual(cleared[0][1][1:], Client.hud_message_bytes(""))
         self.assertEqual(client.pickup_messages, [])
 
     def test_scouts_every_location_once(self) -> None:
@@ -75,6 +94,18 @@ class HudMessageCheckTest(unittest.TestCase):
         self.run_check(client, ctx, Client.HUD_MODE, 1.0)
         self.run_check(client, ctx, Client.HUD_MODE, 2.0)
         self.assertEqual(ctx.sent, [{"cmd": "LocationScouts", "locations": [3, 4, 5], "create_as_hint": 0}])
+
+    def test_scouts_again_after_a_reconnect(self) -> None:
+        client, ctx = Client.Z2RClient(), self.make_ctx()
+        client.guards = []
+        ctx.locations_info = {3: object(), 4: object(), 5: object()}
+        self.run_check(client, ctx, Client.HUD_MODE, 1.0)
+        self.assertEqual(ctx.sent, [])
+        ctx.locations_info = {}  # a reconnect forgets them
+        self.run_check(client, ctx, Client.HUD_MODE, 2.0)
+        self.run_check(client, ctx, Client.HUD_MODE, 5.0)
+        self.run_check(client, ctx, Client.HUD_MODE, 12.5)
+        self.assertEqual(len(ctx.sent), 2)  # once, then again after SCOUT_RETRY_SECONDS
 
     def test_waits_outside_side_view_and_for_a_free_buffer(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
