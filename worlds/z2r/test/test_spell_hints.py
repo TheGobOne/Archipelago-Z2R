@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from .. import Client
-from ..spell_hints import HINT_LOCATION_NAMES, SPELL_HINT_ITEMS, spell_hint_text
+from ..spell_hints import HINT_LOCATION_NAMES, SPELL_HINT_ITEMS, spell_hint_text, unplaced_spell_hint_text
 
 
 class SpellHintTextTest(unittest.TestCase):
@@ -44,6 +44,18 @@ class SpellHintTextTest(unittest.TestCase):
             for location in names:
                 with self.subTest(game=game, location=location):
                     self.assertIsNotNone(spell_hint_text("Upstab", "Gob-DWR", location, False, game=game))
+
+    def test_location_too_long_falls_back_instead_of_none(self) -> None:
+        text = spell_hint_text("Water", "Tetra", "Some Extremely Long Location Name Here", False, game="DWR")
+        self.assertEqual(text, "WATER AT$TETRA$ANOTHER$GAME")
+
+    def test_unplaced_items_still_get_text(self) -> None:
+        for item in SPELL_HINT_ITEMS:
+            for precollected in (True, False):
+                text = unplaced_spell_hint_text(item, precollected)
+                self.assertLessEqual(len(text.split("$")), 4)
+                self.assertTrue(all(len(line) <= 11 for line in text.split("$")), text)
+                self.assertIsNotNone(Client.spell_hint_bytes(text, item))
 
     def test_every_location_name_fits_two_lines(self) -> None:
         for location in HINT_LOCATION_NAMES:
