@@ -32,6 +32,12 @@ class SpellHintTextTest(unittest.TestCase):
         self.assertEqual(spell_hint_text("Medicine", "Gob-DWR", "Garin's Grave Chest 3", False, game="DWR"),
                          "MEDICINE AT$GOB-DWR$GRAVE 3")
 
+    def test_zora_names(self) -> None:
+        self.assertEqual(spell_hint_text("Medicine", "Gob-ZORA", "Shop 2 Middle", False, game="ZORA"),
+                         "MEDICINE AT$GOB-ZORA$SHOP 2 MID")
+        self.assertEqual(spell_hint_text("Medicine", "Gob-ZORA", "Level 4 Room 0A Floor", False, game="ZORA"),
+                         "MEDICINE AT$GOB-ZORA$LEVEL 4")
+
     def test_every_other_game_name_fits_two_lines(self) -> None:
         from ..spell_hints import OTHER_GAME_LOCATION_NAMES
         for game, names in OTHER_GAME_LOCATION_NAMES.items():
