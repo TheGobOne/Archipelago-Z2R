@@ -161,6 +161,8 @@ PPU_BUFFER = 0x0302  # PpuAddrHi; $FF when the buffer is empty
 HUD_MESSAGE_ADDRESS = 0x2022  # nametable row 1, column 2
 HUD_MESSAGE_WIDTH = 28
 HUD_MESSAGE_SECONDS = 5.0
+HUD_MESSAGE_SECONDS_BUSY = 2.5  # each message's time when more are waiting
+HUD_MESSAGE_STALE = 10.0  # a message older than this is dropped: it no longer matches what just happened
 BLANK_TILE = 0xF4
 PPU_BUFFER_LENGTH = 0x0301  # index of the buffer's $FF end; the game appends its own entries there
 # The HUD's tiles exist in every CHR bank only for letters, digits, - and /; other symbols are dialog-font only
@@ -191,8 +193,9 @@ def _fit_item(item_name: str, room: int) -> str:
             return shown
     shown = _shown(item_name)
     head = shown[:room + 1]
-    cut = head.rsplit(" ", 1)[0] if " " in head else shown[:room]
-    return cut[:room].rstrip()
+    if " " in head:  # cut at the last whole word that fits
+        return head.rsplit(" ", 1)[0].rstrip()
+    return "AP ITEM"  # even the first word is too long: a fragment would only confuse
 
 
 def pickup_message(item_name: str, player_name: str, own: bool) -> str:
@@ -224,7 +227,7 @@ def item_text_bytes(text: str, number: int) -> bytes | None:
 def item_dialog_text(item_name: str, player_name: str, own: bool, own_sign_name: str | None = None) -> str:
     """The dialog for an item: "YOU GOT$YOUR$<item>" for this slot's item, else "YOU SENT$<item>$TO <player>" (the
     player cut to the 8 characters left on the line). The item is two lines at most; AP$ITEM if it can't fit."""
-    item = (own_sign_name if own else None) or short_item_name(item_name, ITEM_TEXT_LINE) or OTHER_ITEM_SIGN
+    item = (own_sign_name if own else None) or short_item_name(item_name, ITEM_TEXT_LINE) or "AP ITEM"
     if own:
         return f"YOU GOT$YOUR${item}"
     player = (short_player_name(player_name) or "ANOTHER")[:ITEM_TEXT_LINE - len("TO ")].rstrip()
@@ -365,7 +368,7 @@ def short_item_name(name: str, width: int | None = None) -> str | None:
     if not words:
         return None
     if len(words) > 1 and words[0] == "PROGRESSIVE":
-        words = words[1:] + ["UPGRADE"]
+        words = words[1:] + ([] if words[-1] in ("UPGRADE", "UPGRADES") else ["UPGRADE"])
 
     def done(candidate: list[str]) -> str | None:
         lines = _fit(candidate, width)
@@ -412,7 +415,7 @@ class Z2RClient(BizHawkClient):
     hints_written: dict[int, bytes]
     pickups_scout_retry: float
     next_item_text_check: float
-    pickup_messages: list[str]
+    pickup_messages: list[tuple[str, float]]
     hud_message_until: float | None
 
     def __init__(self) -> None:
@@ -561,7 +564,7 @@ class Z2RClient(BizHawkClient):
             in_dialog = ctx.location_names.lookup_in_game(location_id) in ctx.slot_data.get("item_text_slots", {})
             message = None if in_dialog else self.pickup_text(ctx, location_id)
             if message:
-                self.pickup_messages.append(message)
+                self.pickup_messages.append((message, time.monotonic()))
             logger.info(f"New Check: {ctx.location_names.lookup_in_game(location_id)} "
                         f"({len(ctx.locations_checked)}/{len(ctx.missing_locations) + len(ctx.checked_locations)})")
 
@@ -629,9 +632,12 @@ class Z2RClient(BizHawkClient):
             if await self.write_hud_message(ctx, ""):
                 self.hud_message_until = None
             return
-        if self.pickup_messages and await self.write_hud_message(ctx, self.pickup_messages[0]):
+        while self.pickup_messages and now - self.pickup_messages[0][1] > HUD_MESSAGE_STALE:
             self.pickup_messages.pop(0)
-            self.hud_message_until = now + HUD_MESSAGE_SECONDS
+        if self.pickup_messages and await self.write_hud_message(ctx, self.pickup_messages[0][0]):
+            self.pickup_messages.pop(0)
+            busy = bool(self.pickup_messages)
+            self.hud_message_until = now + (HUD_MESSAGE_SECONDS_BUSY if busy else HUD_MESSAGE_SECONDS)
 
     async def write_hud_message(self, ctx: "BizHawkClientContext", text: str) -> bool:
         """Queue text for the HUD message row in the game's PPU buffer if it is empty. True if written."""
@@ -799,14 +805,15 @@ class Z2RClient(BizHawkClient):
         else:
             name = ctx.item_names.lookup_in_slot(info.item, info.player)
         owner = None if info.player == ctx.slot else (
-            (short_player_name(ctx.player_names.get(info.player, "")) or f"P{info.player}")[:10].rstrip())
+            (short_player_name(ctx.player_names.get(info.player, "")) or f"PLAYER{info.player}")[:10].rstrip())
         return hint_sentence(PLACE_NAMES.get(location_name, "SOMEWHERE"), name, owner)
 
     def choose_hints(self, ctx: "BizHawkClientContext", count: int) -> list[int]:
         """Pick the locations to hint at: progression items first, in an order fixed by the seed and slot so a
         reconnect writes the same hints."""
+        checked = getattr(ctx, "checked_locations", set())
         candidates = sorted(LOCATION_NAME_TO_ID[name] for name in ctx.slot_data.get("hint_places", {})
-                            if name in LOCATION_NAME_TO_ID)
+                            if name in LOCATION_NAME_TO_ID and LOCATION_NAME_TO_ID[name] not in checked)
         seed = getattr(ctx, "server_seed_name", None) or ctx.seed_name
         rng = random.Random(f"{seed}-{ctx.slot}-z2r-hints")
         rng.shuffle(candidates)

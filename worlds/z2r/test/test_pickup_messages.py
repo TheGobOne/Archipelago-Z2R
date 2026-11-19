@@ -16,7 +16,7 @@ class PickupMessageTextTest(unittest.TestCase):
     def test_long_names_are_cut_to_fit(self) -> None:
         text = Client.pickup_message("Progressive Ultra Mega Upgrade", "A Very Long Player", False)
         self.assertLessEqual(len(text), Client.HUD_MESSAGE_WIDTH)
-        self.assertEqual(text, "SENT PROGRESS TO A VERY LONG")
+        self.assertEqual(text, "SENT AP ITEM TO A VERY LONG")
 
     def test_apostrophes_are_dropped(self) -> None:
         self.assertEqual(Client.pickup_message("Erdrick's Token", "Gob", False), "SENT ERDRICKS TOKEN TO GOB")
@@ -43,6 +43,16 @@ class PickupMessageTextTest(unittest.TestCase):
                     text = Client.hint_sentence(place, "Progressive Ultra Mega Upgrade", owner)
                     self.assertLessEqual(len(text.split("$")), 4, text)
                     self.assertTrue(all(len(line) <= 11 for line in text.split("$")), text)
+
+    def test_progressive_upgrade_is_not_doubled(self) -> None:
+        self.assertNotIn("UPGRD$UPGRD", Client.short_item_name("Progressive Sword Upgrade") or "")
+
+    def test_item_too_long_for_a_word_cut_is_ap_item(self) -> None:
+        self.assertEqual(Client.pickup_message("Supercalifragilistic", "Tetra", False), "SENT AP ITEM TO TETRA")
+
+    def test_dialog_fallback_keeps_ap_item_on_one_line(self) -> None:
+        text = Client.item_dialog_text("Alpha Bravo Charlie Delta Echo Foxtrot Golf", "Gob", True)
+        self.assertEqual(text, "YOU GOT$YOUR$AP ITEM")
 
     def test_buffer_entry_layout(self) -> None:
         data = Client.hud_message_bytes("GOT HAMMER")
@@ -78,7 +88,7 @@ class HudMessageCheckTest(unittest.TestCase):
     def test_shows_then_clears_after_five_seconds(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []
-        client.pickup_messages = ["GOT HAMMER"]
+        client.pickup_messages = [("GOT HAMMER", 99.0)]
         shown = self.run_check(client, ctx, Client.HUD_MODE, 100.0)
         entry = Client.hud_message_bytes("GOT HAMMER")
         self.assertEqual(shown[0][0], Client.PPU_BUFFER_LENGTH)
@@ -95,6 +105,20 @@ class HudMessageCheckTest(unittest.TestCase):
         self.run_check(client, ctx, Client.HUD_MODE, 2.0)
         self.assertEqual(ctx.sent, [{"cmd": "LocationScouts", "locations": [3, 4, 5], "create_as_hint": 0}])
 
+    def test_stale_messages_are_dropped(self) -> None:
+        client, ctx = Client.Z2RClient(), self.make_ctx()
+        client.guards = []
+        client.pickup_messages = [("OLD", 1.0), ("NEW", 20.0)]
+        shown = self.run_check(client, ctx, Client.HUD_MODE, 21.0)
+        self.assertEqual(shown[0][1][1:], Client.hud_message_bytes("NEW"))
+
+    def test_waiting_messages_show_for_less_time(self) -> None:
+        client, ctx = Client.Z2RClient(), self.make_ctx()
+        client.guards = []
+        client.pickup_messages = [("ONE", 10.0), ("TWO", 10.0)]
+        self.run_check(client, ctx, Client.HUD_MODE, 10.0)
+        self.assertEqual(client.hud_message_until, 10.0 + Client.HUD_MESSAGE_SECONDS_BUSY)
+
     def test_scouts_again_after_a_reconnect(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []
@@ -110,10 +134,10 @@ class HudMessageCheckTest(unittest.TestCase):
     def test_waits_outside_side_view_and_for_a_free_buffer(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []
-        client.pickup_messages = ["GOT HAMMER"]
+        client.pickup_messages = [("GOT HAMMER", 1.0)]
         self.assertEqual(self.run_check(client, ctx, 0x05, 1.0), [])
         self.assertEqual(self.run_check(client, ctx, Client.HUD_MODE, 1.0, buffer_free=False), [])
-        self.assertEqual(client.pickup_messages, ["GOT HAMMER"])
+        self.assertEqual(client.pickup_messages, [("GOT HAMMER", 1.0)])
 
     def test_pickup_text_needs_the_scouted_item(self) -> None:
         client = Client.Z2RClient()
