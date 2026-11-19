@@ -9,6 +9,7 @@ import worlds._bizhawk as bizhawk
 from worlds._bizhawk.client import BizHawkClient
 from .Items import CONTAINER_ITEMS, ITEM_TABLE
 from .Locations import LOCATION_NAME_TO_ID
+from .spell_hints import SPELL_HINT_ITEMS
 
 if TYPE_CHECKING:
     from worlds._bizhawk.context import BizHawkClientContext
@@ -201,6 +202,21 @@ HINT_SIZE = 52
 HINT_LINE_LENGTH = 10
 
 
+# Spell item hints: the Z2R app reserves SPELL_HINT_SIZE bytes for each, "AP HINT" padded with end bytes, with
+# 0xA0 + the item's position in SPELL_HINT_ITEMS in the last byte (CustomTexts.ArchipelagoSpellHintPlaceholder)
+SPELL_HINT_SIZE = 49
+SPELL_HINT_BASE = 0xA0
+
+
+def spell_hint_bytes(text: str, item: str) -> bytes | None:
+    """The SPELL_HINT_SIZE bytes of a spell item hint, or None if the text is too long to fit."""
+    encoded = encode_text(text)
+    if len(encoded) > SPELL_HINT_SIZE - 1:
+        return None
+    padding = bytes([0xFF]) * (SPELL_HINT_SIZE - 1 - len(encoded))
+    return encoded + padding + bytes([SPELL_HINT_BASE + SPELL_HINT_ITEMS.index(item)])
+
+
 def hint_bytes(text: str, number: int) -> bytes | None:
     """The HINT_SIZE bytes of a hint, or None if the text is too long to fit."""
     encoded = encode_text(text)
@@ -289,6 +305,7 @@ class Z2RClient(BizHawkClient):
     hints_scouted: bool
     hints_scout_retry: float
     next_hint_check: float
+    next_spell_check: float
     hints_written: dict[int, bytes]
 
     def __init__(self) -> None:
@@ -306,6 +323,7 @@ class Z2RClient(BizHawkClient):
         self.hints_scouted = False
         self.hints_scout_retry = 0.0
         self.next_hint_check = 0.0
+        self.next_spell_check = 0.0
         self.hints_written = {}
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
@@ -332,6 +350,7 @@ class Z2RClient(BizHawkClient):
         self.hints_scouted = False
         self.hints_scout_retry = 0.0
         self.next_hint_check = 0.0
+        self.next_spell_check = 0.0
         self.hints_written = {}
         ctx.game = self.game
         ctx.items_handling = 0b111
@@ -367,6 +386,7 @@ class Z2RClient(BizHawkClient):
         try:
             await self.sign_check(ctx)
             await self.hint_check(ctx)
+            await self.spell_hint_check(ctx)
             event_bytes, mode_bytes = await bizhawk.read(
                 ctx.bizhawk_ctx, [(GAME_EVENT_ADDRESS, 1, RAM), (GAME_MODE_ADDRESS, 2, RAM)])
             event, mode, mode_current = event_bytes[0], mode_bytes[0], mode_bytes[1]
@@ -582,6 +602,34 @@ class Z2RClient(BizHawkClient):
         rng.shuffle(candidates)
         candidates.sort(key=lambda location_id: not ctx.locations_info[location_id].flags & 0b001)
         return candidates[:count]
+
+    async def spell_hint_check(self, ctx: "BizHawkClientContext") -> None:
+        """Fill the Z2R app's spell item placeholders with where each spell item of this slot is, from slot data
+        (spell_hints). Only a placeholder or a hint this client wrote is overwritten. Repeats every
+        SIGN_RECHECK_SECONDS, since reloading the ROM brings the placeholders back."""
+        now = time.monotonic()
+        if now < self.next_spell_check:
+            return
+        slots = ctx.slot_data.get("spell_hint_slots", {})
+        texts = ctx.slot_data.get("spell_hints", {})
+        pairs = [(item, index) for item, index in slots.items() if item in texts and item in SPELL_HINT_ITEMS]
+        if not pairs:
+            self.next_spell_check = float("inf")
+            return
+        self.next_spell_check = now + SIGN_RECHECK_SECONDS
+        addresses = await self.text_addresses(ctx, [index for _item, index in pairs])
+        current = await bizhawk.read(ctx.bizhawk_ctx, [(address, SPELL_HINT_SIZE, "PRG ROM") for address in addresses])
+        writes = []
+        for (item, _index), address, now_bytes in zip(pairs, addresses, current):
+            wanted = spell_hint_bytes(texts[item], item)
+            if wanted is None or now_bytes == wanted:
+                continue
+            if now_bytes == spell_hint_bytes("AP HINT", item) or now_bytes == self.hints_written.get(address):
+                writes.append((address, wanted, "PRG ROM"))
+                self.hints_written[address] = wanted
+        if writes:
+            await bizhawk.write(ctx.bizhawk_ctx, writes)
+            logger.debug(f"Wrote {len(writes)} spell item hint(s)")
 
     async def hint_check(self, ctx: "BizHawkClientContext") -> None:
         """Fill the helpful hint NPCs with hints about items in this world. Repeats every SIGN_RECHECK_SECONDS, since
