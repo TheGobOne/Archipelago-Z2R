@@ -18,8 +18,14 @@ class PickupMessageTextTest(unittest.TestCase):
         self.assertLessEqual(len(text), Client.HUD_MESSAGE_WIDTH)
         self.assertEqual(text, "SENT PROGRESS TO A VERY LONG")
 
-    def test_characters_the_font_lacks_become_spaces(self) -> None:
-        self.assertEqual(Client.pickup_message("Erdrick's Token", "Gob", False), "SENT ERDRICK S TOKEN TO GOB")
+    def test_apostrophes_are_dropped(self) -> None:
+        self.assertEqual(Client.pickup_message("Erdrick's Token", "Gob", False), "SENT ERDRICKS TOKEN TO GOB")
+
+    def test_long_item_uses_its_short_form(self) -> None:
+        self.assertEqual(Client.pickup_message("Fighter's Ring", "Gob-DWR", False), "SENT F-RING TO GOB-DWR")
+
+    def test_long_item_without_short_form_is_cut_at_a_word(self) -> None:
+        self.assertEqual(Client.pickup_message("Golden Feather Cape", "Gob-DWR", False), "SENT GOLDEN TO GOB-DWR")
 
     def test_buffer_entry_layout(self) -> None:
         data = Client.hud_message_bytes("GOT HAMMER")

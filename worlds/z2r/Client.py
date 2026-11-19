@@ -171,19 +171,32 @@ def hud_message_bytes(text: str) -> bytes:
 
 def _shown(text: str) -> str:
     """Text as the game can show it: upper case, characters the font has, single spaces."""
-    kept = "".join(c if "A" <= c <= "Z" or "0" <= c <= "9" or c in ".,!?-/" else " " for c in text.upper())
+    kept = "".join(c if "A" <= c <= "Z" or "0" <= c <= "9" or c in ".,!?-/" else " "
+                   for c in text.upper().replace("'", ""))
     return " ".join(kept.split())
+
+
+def _fit_item(item_name: str, room: int) -> str:
+    """The item name in at most `room` characters: the full name, else its sign short form (FIGHTER'S RING ->
+    F-RING), else the name cut at the last whole word that fits (cut mid-word only if one word is too long)."""
+    for candidate in (item_name, SIGN_SHORT_FORMS.get(item_name.upper(), "")):
+        shown = _shown(candidate)
+        if shown and len(shown) <= room:
+            return shown
+    shown = _shown(item_name)
+    head = shown[:room + 1]
+    cut = head.rsplit(" ", 1)[0] if " " in head else shown[:room]
+    return cut[:room].rstrip()
 
 
 def pickup_message(item_name: str, player_name: str, own: bool) -> str:
     """"GOT <item>" for an item of this slot, else "SENT <item> TO <player>", with the player cut at 11 characters
-    and the item cut so the whole message fits HUD_MESSAGE_WIDTH."""
-    item = _shown(item_name)
+    and the item shortened so the whole message fits HUD_MESSAGE_WIDTH."""
     if own:
-        return f"GOT {item}"[:HUD_MESSAGE_WIDTH].rstrip()
+        return f"GOT {_fit_item(item_name, HUD_MESSAGE_WIDTH - len('GOT '))}"
     player = short_player_name(player_name) or "ANOTHER PLAYER"
     room = HUD_MESSAGE_WIDTH - len("SENT  TO ") - len(player)
-    return f"SENT {item[:room].rstrip()} TO {player}"
+    return f"SENT {_fit_item(item_name, room)} TO {player}"
 
 
 def short_player_name(name: str) -> str | None:
