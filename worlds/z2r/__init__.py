@@ -9,7 +9,7 @@ from .Locations import (CRYSTAL_ITEM, FORMAT_VERSION, GOAL_EVENT, LOCATION_NAME_
                         Z2RLocation)
 from .Options import Z2ROptions
 from .Client import Z2RClient  # required to register the client with the BizHawk client
-from .spell_hints import SPELL_HINT_ITEMS, spell_hint_text
+from .spell_hints import SPELL_HINT_ITEMS, spell_hint_text, unplaced_spell_hint_text
 
 
 class Z2RWeb(WebWorld):
@@ -215,6 +215,10 @@ class Z2RWorld(World):
             text = spell_hint_text(item.name, self.multiworld.get_player_name(location.player), location.name,
                                    same_game, own=location.player == self.player,
                                    game=self.multiworld.worlds[location.player].game)
-            if text is not None:
-                texts[item.name] = text
+            texts[item.name] = text
+        # a spell item in no location (a starting item, or one not in this game) still replaces its placeholder
+        precollected = {item.name for item in self.multiworld.precollected_items[self.player]}
+        for name in SPELL_HINT_ITEMS:
+            if name not in texts:
+                texts[name] = unplaced_spell_hint_text(name, name in precollected)
         return texts

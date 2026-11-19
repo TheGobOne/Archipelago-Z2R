@@ -100,20 +100,24 @@ def zora_level_name(location: str) -> str | None:
 
 
 def spell_hint_text(item: str, owner: str, location: str, same_game: bool, own: bool = False,
-                    game: str = "") -> str | None:
+                    game: str = "") -> str:
     """The hint for a spell item of this slot that sits in `location`. Another player's item: "<ITEM> AT", the owner's
     name (cut to 11 characters), then the location. This slot's own item: "YOUR <ITEM> AT" then the location. The
-    location is in up to two lines; None when it does not fit."""
+    location is in up to two lines; one that won't fit becomes ANOTHER GAME (or SOMEWHERE in this world), so the
+    NPC never keeps the AP HINT placeholder."""
     where = (HINT_LOCATION_NAMES.get(location, OTHER_GAME_LOCATION) if same_game
              else (zora_level_name(location) if game == "ZORA" else None)
              or OTHER_GAME_LOCATION_NAMES.get(game, {}).get(location, OTHER_GAME_LOCATION))
     lines = textwrap.wrap(where, NAME_LENGTH, break_long_words=False)
     if len(lines) > 2 or any(len(line) > NAME_LENGTH for line in lines):
-        return None
+        lines = textwrap.wrap("SOMEWHERE" if same_game else OTHER_GAME_LOCATION, NAME_LENGTH)
     if own:
         head = textwrap.wrap(f"YOUR {item.upper()} AT", NAME_LENGTH, break_long_words=False)
-        if len(head) > 2:
-            return None
-        return "$".join([*head, *lines])
+        return "$".join([*head[:2], *lines])
     name = _clean(owner)[:NAME_LENGTH].strip() or OTHER_PLAYER
     return "$".join([f"{item.upper()} AT", name, *lines])
+
+
+def unplaced_spell_hint_text(item: str, precollected: bool) -> str:
+    """The hint for a spell item that sits in no location: one the player starts with, or one not in the game."""
+    return f"YOU START$WITH YOUR${item.upper()}" if precollected else f"NO {item.upper()}$IN THIS$GAME"
