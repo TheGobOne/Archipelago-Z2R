@@ -119,7 +119,7 @@ class TestTownSigns(unittest.TestCase):
 
     def run_check(self, ctx, rom: FakeRom, client: Client.Z2RClient | None = None) -> Client.Z2RClient:
         client = client or Client.Z2RClient()
-        with mock.patch.object(Client.bizhawk, "read", rom.read), mock.patch.object(Client.bizhawk, "write", rom.write):
+        with mock.patch.object(Client.bizhawk, "read", rom.read), mock.patch.object(Client.bizhawk, "write", rom.write), mock.patch.object(Client.bizhawk, "guarded_write", lambda _c, w, _g: rom.write(_c, w)):
             asyncio.run(client.sign_check(ctx))
         return client
 
@@ -240,7 +240,7 @@ class TestHelpfulHints(unittest.TestCase):
 
     def run_check(self, ctx, rom: FakeRom, client: Client.Z2RClient | None = None) -> Client.Z2RClient:
         client = client or Client.Z2RClient()
-        with mock.patch.object(Client.bizhawk, "read", rom.read), mock.patch.object(Client.bizhawk, "write", rom.write):
+        with mock.patch.object(Client.bizhawk, "read", rom.read), mock.patch.object(Client.bizhawk, "write", rom.write), mock.patch.object(Client.bizhawk, "guarded_write", lambda _c, w, _g: rom.write(_c, w)):
             asyncio.run(client.hint_check(ctx))
         return client
 

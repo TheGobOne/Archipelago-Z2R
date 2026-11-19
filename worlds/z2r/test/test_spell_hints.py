@@ -91,7 +91,7 @@ class SpellHintCheckTest(unittest.TestCase):
         async def addresses(_ctx, indexes):
             return [self.ADDRESS for _ in indexes]
 
-        with mock.patch.object(Client.bizhawk, "read", read), mock.patch.object(Client.bizhawk, "write", write), \
+        with mock.patch.object(Client.bizhawk, "read", read), mock.patch.object(Client.bizhawk, "write", write), mock.patch.object(Client.bizhawk, "guarded_write", lambda _c, w, _g: write(_c, w)), \
                 mock.patch.object(Client.Z2RClient, "text_addresses", staticmethod(addresses)):
             asyncio.run(client.spell_hint_check(ctx))
 

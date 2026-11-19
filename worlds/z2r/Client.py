@@ -610,7 +610,8 @@ class Z2RClient(BizHawkClient):
                 writes.append((address, wanted, "PRG ROM"))
                 self.hints_written[address] = wanted
         if writes:
-            await bizhawk.write(ctx.bizhawk_ctx, writes)
+            # guarded: nothing is written if the game left the state it was read in (a dialog opened, a room changed)
+            await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, self.guards)
             logger.debug(f"Wrote {len(writes)} item dialog(s)")
 
     async def hud_message_check(self, ctx: "BizHawkClientContext", mode: int) -> None:
@@ -773,7 +774,8 @@ class Z2RClient(BizHawkClient):
                 writes.append((address, wanted, "PRG ROM"))
                 self.signs_written[address] = wanted
         if writes:
-            await bizhawk.write(ctx.bizhawk_ctx, writes)
+            # guarded: nothing is written if the game left the state it was read in (a dialog opened, a room changed)
+            await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, self.guards)
             logger.debug(f"Wrote {len(writes)} town sign(s)")
 
     @staticmethod
@@ -785,16 +787,6 @@ class Z2RClient(BizHawkClient):
         entries = [west + i * 2 if i < WEST_TEXT_COUNT else east + (i - WEST_TEXT_COUNT) * 2 for i in indexes]
         pointers = await bizhawk.read(ctx.bizhawk_ctx, [(entry, 2, "PRG ROM") for entry in entries])
         return [BANK3_PRG + int.from_bytes(pointer, "little") - 0x8000 for pointer in pointers]
-
-    def hint_item_text(self, ctx: "BizHawkClientContext", location_id: int) -> str:
-        """The item part of a hint: a Z2R item of this slot by its sign name, another item by a short form of its name
-        that fits two lines, or AP ITEM."""
-        item = ctx.locations_info[location_id]
-        if item.player == ctx.slot:
-            name = ctx.item_names.lookup_in_game(item.item, self.game)
-            return SIGN_NAMES.get(name) or short_item_name(name) or OTHER_ITEM_SIGN
-        name = ctx.item_names.lookup_in_slot(item.item, item.player)
-        return short_item_name(name) or OTHER_ITEM_SIGN
 
     def hint_text(self, ctx: "BizHawkClientContext", location_id: int, location_name: str) -> str:
         """A helpful hint naming the place and item: "P1 HAS YOUR <ITEM>." for this slot's own item, else
@@ -845,7 +837,8 @@ class Z2RClient(BizHawkClient):
                 writes.append((address, wanted, "PRG ROM"))
                 self.hints_written[address] = wanted
         if writes:
-            await bizhawk.write(ctx.bizhawk_ctx, writes)
+            # guarded: nothing is written if the game left the state it was read in (a dialog opened, a room changed)
+            await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, self.guards)
             logger.debug(f"Wrote {len(writes)} spell item hint(s)")
 
     async def hint_check(self, ctx: "BizHawkClientContext") -> None:
@@ -892,7 +885,8 @@ class Z2RClient(BizHawkClient):
                 writes.append((address, wanted, "PRG ROM"))
                 self.hints_written[address] = wanted
         if writes:
-            await bizhawk.write(ctx.bizhawk_ctx, writes)
+            # guarded: nothing is written if the game left the state it was read in (a dialog opened, a room changed)
+            await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, self.guards)
             logger.debug(f"Wrote {len(writes)} helpful hint(s)")
 
     async def consumable_check(self, ctx: "BizHawkClientContext", name: str) -> None:

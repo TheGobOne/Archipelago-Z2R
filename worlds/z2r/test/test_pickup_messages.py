@@ -196,7 +196,7 @@ class ItemTextCheckTest(unittest.TestCase):
         async def addresses(_ctx, indexes):
             return [self.ADDRESS for _ in indexes]
 
-        with mock.patch.object(Client.bizhawk, "read", read), mock.patch.object(Client.bizhawk, "write", write),                 mock.patch.object(Client.Z2RClient, "text_addresses", staticmethod(addresses)):
+        with mock.patch.object(Client.bizhawk, "read", read), mock.patch.object(Client.bizhawk, "write", write), mock.patch.object(Client.bizhawk, "guarded_write", lambda _c, w, _g: write(_c, w)),                 mock.patch.object(Client.Z2RClient, "text_addresses", staticmethod(addresses)):
             asyncio.run(client.item_text_check(ctx))
 
     def test_own_item_replaces_the_placeholder(self) -> None:
