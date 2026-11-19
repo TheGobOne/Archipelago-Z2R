@@ -195,7 +195,7 @@ def pickup_message(item_name: str, player_name: str, own: bool) -> str:
     """"GOT <item>" for an item of this slot, else "SENT <item> TO <player>", with the player cut at 11 characters
     and the item shortened so the whole message fits HUD_MESSAGE_WIDTH."""
     if own:
-        return f"GOT {_fit_item(item_name, HUD_MESSAGE_WIDTH - len('GOT '))}"
+        return f"GOT YOUR {_fit_item(item_name, HUD_MESSAGE_WIDTH - len('GOT YOUR '))}"
     player = short_player_name(player_name) or "ANOTHER PLAYER"
     room = HUD_MESSAGE_WIDTH - len("SENT  TO ") - len(player)
     return f"SENT {_fit_item(item_name, room)} TO {player}"
