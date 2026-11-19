@@ -222,3 +222,43 @@ class ItemTextCheckTest(unittest.TestCase):
         self.run_check(self.make_ctx(None), memory, client)
         self.assertEqual(memory[self.ADDRESS], placeholder)
         self.assertEqual(client.next_item_text_check, 0.0)
+
+
+class ErrorDisplayTest(unittest.TestCase):
+    def run_error(self, client, state, now, buffer_free=True):
+        writes = []
+
+        async def read(_ctx, reads):
+            return [bytes([state[0]]) if size == 1 else bytes(state[1:]) for _a, size, _d in reads]
+
+        async def guarded_write(_ctx, w, _guards):
+            if buffer_free:
+                writes.extend(w)
+            return buffer_free
+
+        with mock.patch.object(Client.bizhawk, "read", read),                 mock.patch.object(Client.bizhawk, "guarded_write", guarded_write),                 mock.patch.object(Client.time, "monotonic", lambda: now):
+            asyncio.run(client.show_error_on_hud(SimpleNamespace(bizhawk_ctx=None), "WRONG ROM FOR THIS SEED"))
+        return writes
+
+    def test_wrong_rom_shows_on_the_hud_in_side_view(self) -> None:
+        client = Client.Z2RClient()
+        writes = self.run_error(client, (Client.GAME_EVENT_MAIN_LOOP, Client.HUD_MODE, Client.HUD_MODE), 1.0)
+        self.assertEqual(writes[0][1][1:], Client.hud_message_bytes("WRONG ROM FOR THIS SEED"))
+
+    def test_error_repeats_every_few_seconds_not_every_frame(self) -> None:
+        client = Client.Z2RClient()
+        state = (Client.GAME_EVENT_MAIN_LOOP, Client.HUD_MODE, Client.HUD_MODE)
+        self.assertEqual(len(self.run_error(client, state, 1.0)), 1)
+        self.assertEqual(self.run_error(client, state, 2.0), [])
+        self.assertEqual(len(self.run_error(client, state, 1.0 + Client.ERROR_HUD_SECONDS)), 1)
+
+    def test_no_error_outside_side_view(self) -> None:
+        client = Client.Z2RClient()
+        self.assertEqual(self.run_error(client, (Client.GAME_EVENT_MAIN_LOOP, 0x05, 0x05), 1.0), [])
+
+    def test_missing_slots_are_reported_once(self) -> None:
+        client = Client.Z2RClient()
+        with self.assertLogs("Client", level="WARNING") as logs:
+            client.note_missing_slots("hint")
+            client.note_missing_slots("item dialog")
+        self.assertEqual(len(logs.records), 1)
