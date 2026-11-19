@@ -8,7 +8,7 @@ from .. import Client
 
 class PickupMessageTextTest(unittest.TestCase):
     def test_own_item(self) -> None:
-        self.assertEqual(Client.pickup_message("Hammer", "Gob-Z2R", True), "GOT HAMMER")
+        self.assertEqual(Client.pickup_message("Hammer", "Gob-Z2R", True), "GOT YOUR HAMMER")
 
     def test_other_players_item(self) -> None:
         self.assertEqual(Client.pickup_message("Silver Arrow", "Tetra", False), "SENT SILVER ARROW TO TETRA")
