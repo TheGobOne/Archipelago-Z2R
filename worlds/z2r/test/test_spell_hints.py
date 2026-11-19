@@ -12,6 +12,14 @@ class SpellHintTextTest(unittest.TestCase):
         self.assertEqual(spell_hint_text("Trophy", "Gob-DWR", "DM_HAMMER_CAVE", True),
                          "TROPHY AT$GOB-DWR$DM HAMMER$CAVE")
 
+    def test_own_item_says_your_and_no_player_line(self) -> None:
+        self.assertEqual(spell_hint_text("Trophy", "Gob-Z2R", "WEST_CAVE_TROPHY", True, own=True),
+                         "YOUR TROPHY$AT$TROPHY CAVE")
+
+    def test_own_item_at_a_long_place(self) -> None:
+        self.assertEqual(spell_hint_text("Medicine", "Gob-Z2R", "EAST_CAVE_PBAG1", True, own=True),
+                         "YOUR$MEDICINE AT$SUNKEN PBAG$CAVE")
+
     def test_owner_name_is_cut_to_eleven(self) -> None:
         text = spell_hint_text("Water", "Gob Is Very Long", "WEST_GRASS", True)
         self.assertEqual(text.split("$")[1], "GOB IS VERY")
