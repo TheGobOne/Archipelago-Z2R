@@ -4,6 +4,7 @@ The Z2R app reserves a placeholder for each of these items (CustomTexts.Archipel
 order below, and the YAML lists the text index of each as spell_hint_slots. The client writes the text from
 slot data (spell_hints) over the placeholder.
 """
+import re
 import textwrap
 
 # The order of the Z2R app's ARCHIPELAGO_SPELL_HINT_ITEMS: each placeholder's last byte is 0xA0 + its position
@@ -50,6 +51,19 @@ OTHER_GAME_LOCATION = "ANOTHER GAME"
 # Short names of other games' locations, by game, for hints about an item in another world. A location not listed
 # here is named OTHER_GAME_LOCATION.
 OTHER_GAME_LOCATION_NAMES: dict[str, dict[str, str]] = {
+    "ZORA": {
+        "Armos": "ARMOS",
+        "Coast": "COAST",
+        "White Sword Cave": "W-SWORD CAVE",
+        "Magical Sword Cave": "M-SWORD CAVE",
+        "Letter Cave": "LETTER CAVE",
+        "Wood Sword Cave": "WOOD SWORD",
+        "Potion Shop Left": "POTION L",
+        "Potion Shop Middle": "POTION MID",
+        "Potion Shop Right": "POTION R",
+        **{f"Shop {s} {w}": f"SHOP {s} {'MID' if w == 'Middle' else w[0]}"
+           for s in range(1, 5) for w in ("Left", "Middle", "Right")},
+    },
     "DWR": {
         **{f"Tantegel Treasury Chest {n}": f"TANT {n}" for n in range(1, 5)},
         "Tantegel Basement Chest": "TANT BASEMENT",
@@ -79,13 +93,20 @@ def _clean(name: str) -> str:
     return " ".join(text.split())
 
 
+def zora_level_name(location: str) -> str | None:
+    """ZORA's rooms and cellars are named "Level N Room XX Floor" and so on; each level shares one short name."""
+    match = re.match(r"Level (\d) ", location)
+    return f"LEVEL {match.group(1)}" if match else None
+
+
 def spell_hint_text(item: str, owner: str, location: str, same_game: bool, own: bool = False,
                     game: str = "") -> str | None:
     """The hint for a spell item of this slot that sits in `location`. Another player's item: "<ITEM> AT", the owner's
     name (cut to 11 characters), then the location. This slot's own item: "YOUR <ITEM> AT" then the location. The
     location is in up to two lines; None when it does not fit."""
     where = (HINT_LOCATION_NAMES.get(location, OTHER_GAME_LOCATION) if same_game
-             else OTHER_GAME_LOCATION_NAMES.get(game, {}).get(location, OTHER_GAME_LOCATION))
+             else (zora_level_name(location) if game == "ZORA" else None)
+             or OTHER_GAME_LOCATION_NAMES.get(game, {}).get(location, OTHER_GAME_LOCATION))
     lines = textwrap.wrap(where, NAME_LENGTH, break_long_words=False)
     if len(lines) > 2 or any(len(line) > NAME_LENGTH for line in lines):
         return None
