@@ -152,6 +152,40 @@ SIGN_LINE_LENGTH = 11
 SIGN_MAX_CHARS = SIGN_SIZE - 2  # text characters that fit before the end byte and the town byte
 
 
+# Pickup messages: when Link picks up an AP item, the blank HUD row above MAGIC and LIFE shows what it was for
+# HUD_MESSAGE_SECONDS, written through the game's PPU buffer (address, length, tiles, then $FF), so Link keeps moving.
+HUD_MODE = 0x0B  # side view, the only mode with the HUD
+PPU_BUFFER = 0x0302  # PpuAddrHi; $FF when the buffer is empty
+HUD_MESSAGE_ADDRESS = 0x2022  # nametable row 1, column 2
+HUD_MESSAGE_WIDTH = 28
+HUD_MESSAGE_SECONDS = 5.0
+BLANK_TILE = 0xF4
+
+
+def hud_message_bytes(text: str) -> bytes:
+    """The PPU buffer entry that writes text (cut and padded to HUD_MESSAGE_WIDTH) into the HUD message row."""
+    tiles = encode_text(text)[:-1][:HUD_MESSAGE_WIDTH]
+    tiles += bytes([BLANK_TILE]) * (HUD_MESSAGE_WIDTH - len(tiles))
+    return bytes([HUD_MESSAGE_ADDRESS >> 8, HUD_MESSAGE_ADDRESS & 0xFF, HUD_MESSAGE_WIDTH]) + tiles + bytes([0xFF])
+
+
+def _shown(text: str) -> str:
+    """Text as the game can show it: upper case, characters the font has, single spaces."""
+    kept = "".join(c if "A" <= c <= "Z" or "0" <= c <= "9" or c in ".,!?-/" else " " for c in text.upper())
+    return " ".join(kept.split())
+
+
+def pickup_message(item_name: str, player_name: str, own: bool) -> str:
+    """"GOT <item>" for an item of this slot, else "SENT <item> TO <player>", with the player cut at 11 characters
+    and the item cut so the whole message fits HUD_MESSAGE_WIDTH."""
+    item = _shown(item_name)
+    if own:
+        return f"GOT {item}"[:HUD_MESSAGE_WIDTH].rstrip()
+    player = short_player_name(player_name) or "ANOTHER PLAYER"
+    room = HUD_MESSAGE_WIDTH - len("SENT  TO ") - len(player)
+    return f"SENT {item[:room].rstrip()} TO {player}"
+
+
 def short_player_name(name: str) -> str | None:
     """A player name as text the game can show, cut off at one sign line (11 characters), or None if nothing shows."""
     shown = "".join(c for c in name.upper() if "A" <= c <= "Z" or "0" <= c <= "9" or c in ".,!?-_ ").strip()
@@ -290,6 +324,9 @@ class Z2RClient(BizHawkClient):
     hints_scout_retry: float
     next_hint_check: float
     hints_written: dict[int, bytes]
+    pickups_scouted: bool
+    pickup_messages: list[str]
+    hud_message_until: float | None
 
     def __init__(self) -> None:
         self.slot_name = ""
@@ -307,6 +344,9 @@ class Z2RClient(BizHawkClient):
         self.hints_scout_retry = 0.0
         self.next_hint_check = 0.0
         self.hints_written = {}
+        self.pickups_scouted = False
+        self.pickup_messages = []
+        self.hud_message_until = None
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
         try:
@@ -333,6 +373,9 @@ class Z2RClient(BizHawkClient):
         self.hints_scout_retry = 0.0
         self.next_hint_check = 0.0
         self.hints_written = {}
+        self.pickups_scouted = False
+        self.pickup_messages = []
+        self.hud_message_until = None
         ctx.game = self.game
         ctx.items_handling = 0b111
         ctx.want_slot_data = True
@@ -394,6 +437,7 @@ class Z2RClient(BizHawkClient):
             flags, game_complete = state[0], state[1][0]
 
             await self.location_check(ctx, flags)
+            await self.hud_message_check(ctx, mode)
             await self.event_check(ctx, flags)
             if game_complete & GAME_COMPLETE_MASK and not ctx.finished_game:
                 await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
@@ -420,8 +464,45 @@ class Z2RClient(BizHawkClient):
 
         for location_id in await ctx.check_locations(checked):
             ctx.locations_checked.add(location_id)
+            message = self.pickup_text(ctx, location_id)
+            if message:
+                self.pickup_messages.append(message)
             logger.info(f"New Check: {ctx.location_names.lookup_in_game(location_id)} "
                         f"({len(ctx.locations_checked)}/{len(ctx.missing_locations) + len(ctx.checked_locations)})")
+
+    def pickup_text(self, ctx: "BizHawkClientContext", location_id: int) -> str | None:
+        """The pickup message for a location this slot just checked, or None if its item isn't known yet."""
+        info = ctx.locations_info.get(location_id)
+        if info is None:
+            return None
+        item_name = ctx.item_names.lookup_in_slot(info.item, info.player)
+        return pickup_message(item_name, ctx.player_names.get(info.player, ""), info.player == ctx.slot)
+
+    async def hud_message_check(self, ctx: "BizHawkClientContext", mode: int) -> None:
+        """Show queued pickup messages in the HUD one at a time for HUD_MESSAGE_SECONDS each, then blank the row.
+        Scouts every location once so a pickup's item is known when it happens. Writes only in side view, and only
+        when the game's PPU buffer is empty, so the game's own screen updates are never overwritten."""
+        if not self.pickups_scouted:
+            await ctx.send_msgs([{"cmd": "LocationScouts", "locations": sorted(ctx.missing_locations),
+                                  "create_as_hint": 0}])
+            self.pickups_scouted = True
+        if mode != HUD_MODE:
+            return
+        now = time.monotonic()
+        if self.hud_message_until is not None:
+            if now < self.hud_message_until:
+                return
+            if await self.write_hud_message(ctx, ""):
+                self.hud_message_until = None
+            return
+        if self.pickup_messages and await self.write_hud_message(ctx, self.pickup_messages[0]):
+            self.pickup_messages.pop(0)
+            self.hud_message_until = now + HUD_MESSAGE_SECONDS
+
+    async def write_hud_message(self, ctx: "BizHawkClientContext", text: str) -> bool:
+        """Queue text for the HUD message row in the game's PPU buffer if it is empty. True if written."""
+        guards = [*self.guards, (PPU_BUFFER, [0xFF], RAM)]
+        return await bizhawk.guarded_write(ctx.bizhawk_ctx, [(PPU_BUFFER, hud_message_bytes(text), RAM)], guards)
 
     async def event_check(self, ctx: "BizHawkClientContext", flags: bytes) -> None:
         """Publish the game events that have happened (such as PALACE1:crystal) to the server's data storage, under
