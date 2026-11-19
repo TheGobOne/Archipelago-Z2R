@@ -161,6 +161,7 @@ HUD_MESSAGE_ADDRESS = 0x2022  # nametable row 1, column 2
 HUD_MESSAGE_WIDTH = 28
 HUD_MESSAGE_SECONDS = 5.0
 HUD_MESSAGE_SECONDS_BUSY = 2.5  # each message's time when more are waiting
+ERROR_HUD_SECONDS = 8.0  # how often an error is put back in the HUD row
 HUD_MESSAGE_STALE = 10.0  # a message older than this is dropped: it no longer matches what just happened
 BLANK_TILE = 0xF4
 PPU_BUFFER_LENGTH = 0x0301  # index of the buffer's $FF end; the game appends its own entries there
@@ -400,6 +401,8 @@ class Z2RClient(BizHawkClient):
     next_item_text_check: float
     pickup_messages: list[tuple[str, float]]
     hud_message_until: float | None
+    next_error_hud: float
+    no_slots_logged: bool
 
     def __init__(self) -> None:
         self.slot_name = ""
@@ -421,6 +424,8 @@ class Z2RClient(BizHawkClient):
         self.next_item_text_check = 0.0
         self.pickup_messages = []
         self.hud_message_until = None
+        self.next_error_hud = 0.0
+        self.no_slots_logged = False
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
         try:
@@ -451,6 +456,8 @@ class Z2RClient(BizHawkClient):
         self.next_item_text_check = 0.0
         self.pickup_messages = []
         self.hud_message_until = None
+        self.next_error_hud = 0.0
+        self.no_slots_logged = False
         ctx.game = self.game
         ctx.items_handling = 0b111
         ctx.want_slot_data = True
@@ -480,6 +487,7 @@ class Z2RClient(BizHawkClient):
                              f"expects seed '{expected_seed}' with hash '{expected_hash}'. Open the ROM that "
                              f"matches your YAML.")
                 self.seed_mismatch_logged = True
+            await self.show_error_on_hud(ctx, "WRONG ROM FOR THIS SEED")
             return
 
         try:
@@ -589,6 +597,8 @@ class Z2RClient(BizHawkClient):
             if now_bytes == item_text_bytes("AP ITEM", number) or now_bytes == self.hints_written.get(address):
                 writes.append((address, wanted, "PRG ROM"))
                 self.hints_written[address] = wanted
+            else:
+                self.note_missing_slots("item dialog")
         if writes:
             await bizhawk.write(ctx.bizhawk_ctx, writes)
             logger.debug(f"Wrote {len(writes)} item dialog(s)")
@@ -618,6 +628,32 @@ class Z2RClient(BizHawkClient):
             self.pickup_messages.pop(0)
             busy = bool(self.pickup_messages)
             self.hud_message_until = now + (HUD_MESSAGE_SECONDS_BUSY if busy else HUD_MESSAGE_SECONDS)
+
+    async def show_error_on_hud(self, ctx: "BizHawkClientContext", text: str) -> None:
+        """Put an error in the HUD row (every ERROR_HUD_SECONDS, since a redraw erases it), for problems the player
+        would otherwise only find in the client window. Only in side view, and only if the buffer is free."""
+        now = time.monotonic()
+        if now < self.next_error_hud:
+            return
+        try:
+            event_bytes, mode_bytes = await bizhawk.read(
+                ctx.bizhawk_ctx, [(GAME_EVENT_ADDRESS, 1, RAM), (GAME_MODE_ADDRESS, 2, RAM)])
+        except bizhawk.RequestFailedError:
+            return
+        event, mode, mode_current = event_bytes[0], mode_bytes[0], mode_bytes[1]
+        if event != GAME_EVENT_MAIN_LOOP or mode != HUD_MODE or mode_current != HUD_MODE:
+            return
+        self.guards = [(GAME_EVENT_ADDRESS, [event], RAM), (GAME_MODE_ADDRESS, [mode, mode_current], RAM)]
+        if await self.write_hud_message(ctx, text):
+            self.next_error_hud = now + ERROR_HUD_SECONDS
+
+    def note_missing_slots(self, kind: str) -> None:
+        """Say once that the ROM has none of the Z2R app's AP text slots (a seed made by an older app or without
+        Archipelago mode), which is why no AP text appears."""
+        if not self.no_slots_logged:
+            self.no_slots_logged = True
+            logger.warning(f"This ROM has no AP {kind} slots to fill in, so that text stays as the ROM has it. It was "
+                           f"probably made by an older Z2R build or without Archipelago mode: make a new seed.")
 
     async def write_hud_message(self, ctx: "BizHawkClientContext", text: str) -> bool:
         """Queue text for the HUD message row in the game's PPU buffer if it is empty. True if written."""
@@ -843,6 +879,8 @@ class Z2RClient(BizHawkClient):
             if now_bytes == hint_bytes("AP HINT", number) or now_bytes == self.hints_written.get(address):
                 writes.append((address, wanted, "PRG ROM"))
                 self.hints_written[address] = wanted
+            else:
+                self.note_missing_slots("hint")
         if writes:
             await bizhawk.write(ctx.bizhawk_ctx, writes)
             logger.debug(f"Wrote {len(writes)} helpful hint(s)")
