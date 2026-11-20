@@ -17,6 +17,9 @@ REFERENCE_BANK = 4
 TILE_BYTES = 32  # an 8x16 sprite: the top 8x8 tile, then the bottom one
 # Half of the Archipelago logo as the Z2R app draws it (ArchipelagoLogo.Logo), for when the ROM's copy was overwritten
 AP_LOGO = bytes.fromhex("0002007dfdffc6380307037dfcfec60054b4ab27570707032848535727070703")
+# The 1-up's own tiles from the vanilla ROM (bank 4, 0xA80). Z2R's seed ROM has the logo there, so a 1-Up can't be copied
+# from the ROM the way other items are.
+ONE_UP_TILES = bytes.fromhex("556086468659865d9a010d5b1b5a55308647866a865d9b0376c1037681037999")
 
 # RAM (ram.inc in the Z2R app)
 MAP_NUMBER = 0x0561
@@ -98,6 +101,8 @@ def encode(rows: list[list[int]]) -> bytes:
 def item_sprite(name: str, sources: dict[int, bytes]) -> bytes | None:
     """The AP tiles drawn as this Z2R item, from the ROM's own tiles (so custom item sprites carry over), or None if it
     isn't a Z2R item with a sprite. A 16 pixel wide item is squeezed to 8, keeping a drawn pixel of each pair."""
+    if name == "1-Up":
+        return ONE_UP_TILES
     tiles = ITEM_TILES.get(name)
     if not tiles or any(tile.address not in sources for tile in tiles):
         return None
