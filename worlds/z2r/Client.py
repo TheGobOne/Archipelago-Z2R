@@ -233,6 +233,13 @@ ITEM_TEXT_BASE = 0xC0
 ITEM_TEXT_LINE = 11
 
 
+def has_marker(now_bytes: bytes, wanted: bytes) -> bool:
+    """True if now_bytes is a placeholder or text this client wrote for the same slot: same length, an end or padding
+    byte before the last one, and the same marker byte last. Every write keeps the placeholder's marker, so a client
+    that restarted (and forgot what it wrote) still knows the text is its own."""
+    return len(now_bytes) == len(wanted) and now_bytes[-2] == 0xFF and now_bytes[-1] == wanted[-1]
+
+
 def item_text_bytes(text: str, number: int) -> bytes | None:
     """The ITEM_TEXT_SIZE bytes of an item dialog, or None if the text is too long to fit."""
     encoded = encode_text(text)
@@ -664,7 +671,7 @@ class Z2RClient(BizHawkClient):
             wanted = item_text_bytes(text, number)
             if wanted is None or now_bytes == wanted:
                 continue
-            if now_bytes == item_text_bytes("AP ITEM", number) or now_bytes == self.hints_written.get(address):
+            if has_marker(now_bytes, wanted) or now_bytes == self.hints_written.get(address):
                 writes.append((address, wanted, "PRG ROM"))
                 self.hints_written[address] = wanted
             else:
@@ -1059,7 +1066,7 @@ class Z2RClient(BizHawkClient):
             wanted = spell_hint_bytes(texts[item], item)
             if wanted is None or now_bytes == wanted:
                 continue
-            if now_bytes == spell_hint_bytes("AP HINT", item) or now_bytes == self.hints_written.get(address):
+            if has_marker(now_bytes, wanted) or now_bytes == self.hints_written.get(address):
                 writes.append((address, wanted, "PRG ROM"))
                 self.hints_written[address] = wanted
         if writes:
@@ -1106,8 +1113,9 @@ class Z2RClient(BizHawkClient):
             wanted = hint_bytes(text, number)
             if wanted is None or now_bytes == wanted:
                 continue
-            # Only overwrite the app's placeholder or a hint this client wrote. Other text is left alone.
-            if now_bytes == hint_bytes("AP HINT", number) or now_bytes == self.hints_written.get(address):
+            # Only overwrite the app's placeholder or a hint this client wrote (it keeps the marker). Other text is left
+            # alone.
+            if has_marker(now_bytes, wanted) or now_bytes == self.hints_written.get(address):
                 writes.append((address, wanted, "PRG ROM"))
                 self.hints_written[address] = wanted
             else:

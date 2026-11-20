@@ -288,6 +288,24 @@ class TestHelpfulHints(unittest.TestCase):
         self.run_check(self.make_ctx({self.GRASS: (1, "Hammer", 1), self.PALACE: (1, "Raft", 1)}), rom)
         self.assertEqual(self.hint(rom, self.HINT_A), before)
 
+    def test_restarted_client_updates_its_own_hints_without_warning(self) -> None:
+        # a client wrote these hints, then restarted (forgetting what it wrote) while the game kept the text
+        rom = self.make_rom()
+        rom.put(self.HINT_A, Client.hint_bytes("OLD$HINT", 0))
+        rom.put(self.HINT_B, Client.hint_bytes("OLD$HINT", 1))
+        client = Client.Z2RClient()
+        with self.assertNoLogs(Client.logger, level="WARNING"):
+            self.run_check(self.make_ctx({self.GRASS: (1, "Hammer", 1), self.PALACE: (1, "Raft", 1)}), rom, client)
+        self.assertNotIn(Client.hint_bytes("OLD$HINT", 0), {self.hint(rom, self.HINT_A), self.hint(rom, self.HINT_B)})
+        self.assertNotIn(Client.hint_bytes("OLD$HINT", 1), {self.hint(rom, self.HINT_A), self.hint(rom, self.HINT_B)})
+
+    def test_text_with_another_slots_marker_is_left_alone(self) -> None:
+        rom = self.make_rom()
+        other = Client.hint_bytes("OLD$HINT", 5)
+        rom.put(self.HINT_A, other)
+        self.run_check(self.make_ctx({self.GRASS: (1, "Hammer", 1), self.PALACE: (1, "Raft", 1)}), rom)
+        self.assertEqual(self.hint(rom, self.HINT_A), other)
+
     def test_no_hint_slots_does_nothing(self) -> None:
         rom = self.make_rom()
         ctx = self.make_ctx({self.GRASS: (1, "Hammer", 1)})

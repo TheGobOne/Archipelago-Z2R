@@ -101,10 +101,18 @@ class SpellHintCheckTest(unittest.TestCase):
         self.assertEqual(memory[self.ADDRESS], Client.spell_hint_bytes("TROPHY AT$GOB$ANOTHER$GAME", "Trophy"))
 
     def test_other_text_is_left_alone(self) -> None:
-        other = Client.spell_hint_bytes("SOMETHING ELSE", "Trophy")
+        # text the app didn't leave as a placeholder: no marker byte at the end
+        other = Client.encode_text("SOMETHING ELSE").ljust(Client.SPELL_HINT_SIZE, b"\x00")
         memory = {self.ADDRESS: other}
         self.run_check(self.make_ctx({"Trophy": "TROPHY AT$GOB$ANOTHER$GAME"}), memory, Client.Z2RClient())
         self.assertEqual(memory[self.ADDRESS], other)
+
+    def test_restarted_client_updates_its_own_hint(self) -> None:
+        # a client wrote this hint, then restarted (forgetting what it wrote) while the game kept the text
+        earlier = Client.spell_hint_bytes("SOMETHING ELSE", "Trophy")
+        memory = {self.ADDRESS: earlier}
+        self.run_check(self.make_ctx({"Trophy": "TROPHY AT$GOB$ANOTHER$GAME"}), memory, Client.Z2RClient())
+        self.assertEqual(memory[self.ADDRESS], Client.spell_hint_bytes("TROPHY AT$GOB$ANOTHER$GAME", "Trophy"))
 
     def test_item_without_text_is_not_touched(self) -> None:
         placeholder = Client.spell_hint_bytes("AP HINT", "Trophy")

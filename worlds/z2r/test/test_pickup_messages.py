@@ -238,10 +238,19 @@ class ItemTextCheckTest(unittest.TestCase):
         self.assertEqual(memory[self.ADDRESS], Client.item_text_bytes("YOU SENT$SILVER$ARROW$TO TETRA", 4))
 
     def test_other_text_is_left_alone(self) -> None:
-        other = Client.item_text_bytes("SOMETHING ELSE", 4)
+        # text the app didn't leave as a placeholder: no marker byte at the end
+        other = Client.encode_text("SOMETHING ELSE").ljust(Client.ITEM_TEXT_SIZE, b"\x00")
         memory = {self.ADDRESS: other}
         self.run_check(self.make_ctx(SimpleNamespace(player=1, item=99)), memory, Client.Z2RClient())
         self.assertEqual(memory[self.ADDRESS], other)
+
+    def test_restarted_client_updates_its_own_text(self) -> None:
+        # a client wrote this dialog, then restarted (forgetting what it wrote) while the game kept the text
+        earlier = Client.item_text_bytes("SOMETHING ELSE", 4)
+        memory = {self.ADDRESS: earlier}
+        self.run_check(self.make_ctx(SimpleNamespace(player=1, item=99)), memory, Client.Z2RClient())
+        self.assertNotEqual(memory[self.ADDRESS], earlier)
+        self.assertEqual(memory[self.ADDRESS][-1], earlier[-1])
 
     def test_waits_for_the_scout_reply(self) -> None:
         placeholder = Client.item_text_bytes("AP ITEM", 4)
