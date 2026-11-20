@@ -228,7 +228,7 @@ class TestItemSpriteCheck(unittest.TestCase):
         run(client, ctx, emulator)
         self.assertEqual(emulator.prg[PALETTE_BYTE], item_sprites.AP_PALETTE)
 
-    def test_other_players_progression_item_gets_the_red_logo(self) -> None:
+    def test_other_players_progression_item_uses_the_same_stable_logo_palette(self) -> None:
         emulator = FakeEmulator(PALACE_ROOM)
         ctx = make_ctx({"PALACE1:item1": ("Candle", 2)})
         ctx.locations_info[LOCATION_NAME_TO_ID["PALACE1:item1"]].flags = 0b001  # progression

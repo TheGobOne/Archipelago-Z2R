@@ -36,8 +36,9 @@ FIXED_LEFT_ADDRESS = 0x1A3C0
 PRG_DOMAIN = "PRG ROM"
 PALETTE_LOAD = 0x1F120  # PRG ROM offset of that lda: $BD, then the table's address - $10
 AP_ITEM_ID = 0x26
-AP_PALETTE = 3
-AP_PROGRESSION_PALETTE = 2  # the red jar's: the logo for a progression item
+# One stable logo color for every AP item (palette 1, the one most items use), so the logo never changes by area.
+AP_PALETTE = 1
+AP_PROGRESSION_PALETTE = 1  # same color: progression items are not marked red
 ITEM_PALETTES = {"Blue Magic Jar": 3, "Red Magic Jar": 2, "1-Up": 0}  # every other item: 1
 
 
