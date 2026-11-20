@@ -428,7 +428,9 @@ class Z2RClient(BizHawkClient):
     hints_written: dict[int, bytes]
     pickups_scout_retry: float
     next_item_text_check: float
-    pickup_messages: list[tuple[str, float | None]]  # text, queued at (None: never stale)
+    # text, queued at (None: never stale), and for received-item messages the z2r_hud_seen count to save once it shows
+    pickup_messages: list[tuple[str, float | None] | tuple[str, float | None, int]]
+    hud_queued: int  # received items already queued this connection (the server count moves only when they show)
     hud_message_until: float | None
     hud_message_text: str  # the message in the HUD now, to show again after a room change
     hud_message_left: float | None  # seconds it had left when a room change wiped it
@@ -463,6 +465,7 @@ class Z2RClient(BizHawkClient):
         self.pickups_scout_retry = 0.0
         self.next_item_text_check = 0.0
         self.pickup_messages = []
+        self.hud_queued = 0
         self.hud_message_until = None
         self.hud_message_text = ""
         self.hud_message_left = None
@@ -505,6 +508,7 @@ class Z2RClient(BizHawkClient):
         self.pickups_scout_retry = 0.0
         self.next_item_text_check = 0.0
         self.pickup_messages = []
+        self.hud_queued = 0
         self.hud_message_until = None
         self.hud_message_text = ""
         self.hud_message_left = None
@@ -699,7 +703,10 @@ class Z2RClient(BizHawkClient):
                and now - self.pickup_messages[0][1] > HUD_MESSAGE_STALE):
             self.pickup_messages.pop(0)
         if self.pickup_messages and await self.write_hud_message(ctx, self.pickup_messages[0][0]):
-            self.hud_message_text = self.pickup_messages.pop(0)[0]
+            entry = self.pickup_messages.pop(0)
+            self.hud_message_text = entry[0]
+            if len(entry) > 2:
+                await self.save_hud_seen(ctx, entry[2])  # counted as seen only now that it is on screen
             busy = bool(self.pickup_messages)
             self.hud_message_until = now + (HUD_MESSAGE_SECONDS_BUSY if busy else HUD_MESSAGE_SECONDS)
 
@@ -840,29 +847,43 @@ class Z2RClient(BizHawkClient):
 
     async def announce_received(self, ctx: "BizHawkClientContext") -> None:
         """Queue a HUD message for each item another player sent this slot that hasn't been shown yet. How many
-        items have been announced is kept on the server, so items that arrived while another game was being played
-        show when this one connects, and a reconnect doesn't show them twice. More than RECEIVED_CATCH_UP_LIMIT
-        at once become one "GOT N ITEMS" line."""
+        items have been shown is kept on the server, so items that arrived while another game was being played
+        show when this one connects, and a reconnect doesn't show them twice. The count moves when a message is
+        written to the HUD (save_hud_seen), not when it is queued, so a message still waiting for side view when
+        the player switches games or closes FCEUX shows next time. More than RECEIVED_CATCH_UP_LIMIT at once
+        become one "GOT N ITEMS" line."""
         key = f"z2r_hud_seen_{ctx.team}_{ctx.slot}"
         ctx.set_notify(key)
         if key not in ctx.stored_data:
             return  # wait for the server's count
         total = len(ctx.items_received)
-        seen = ctx.stored_data[key] or 0
-        if total == seen:
+        start = max(ctx.stored_data[key] or 0, self.hud_queued)
+        if total <= start:
             return
-        if total > seen:
-            new = [(ctx.item_names.lookup_in_slot(item.item, ctx.slot), ctx.player_names.get(item.player, "") if item.player else "")
-                   for item in ctx.items_received[seen:] if item.player != ctx.slot]  # own finds have pickup text
-            # the server ("Archipelago", player 0) gives starting items: they have no sender
-            if len(new) > RECEIVED_CATCH_UP_LIMIT:
-                self.pickup_messages.append((f"GOT {len(new)} ITEMS FROM OTHERS", None))
-            else:
-                # no time stamp: these wait for side view however long that takes, instead of going stale
-                self.pickup_messages.extend((received_message(name, sender), None) for name, sender in new)
-        ctx.stored_data[key] = total
+        self.hud_queued = total
+        # (seen count once this one shows, item, sender); own finds have pickup text, so they get no message
+        new = [(index + 1, ctx.item_names.lookup_in_slot(item.item, ctx.slot),
+                ctx.player_names.get(item.player, "") if item.player else "")
+               for index, item in enumerate(ctx.items_received[start:], start) if item.player != ctx.slot]
+        # the server ("Archipelago", player 0) gives starting items: they have no sender
+        if not new:
+            await self.save_hud_seen(ctx, total)  # nothing to show
+        elif len(new) > RECEIVED_CATCH_UP_LIMIT:
+            self.pickup_messages.append((f"GOT {len(new)} ITEMS FROM OTHERS", None, total))
+        else:
+            # no time stamp: these wait for side view however long that takes, instead of going stale.
+            # The last one also covers any own finds after it.
+            new[-1] = (total,) + new[-1][1:]
+            self.pickup_messages.extend((received_message(name, sender), None, seen) for seen, name, sender in new)
+
+    async def save_hud_seen(self, ctx: "BizHawkClientContext", seen: int) -> None:
+        """Store on the server that the first `seen` received items have been shown."""
+        key = f"z2r_hud_seen_{ctx.team}_{ctx.slot}"
+        if seen <= (ctx.stored_data.get(key) or 0):
+            return
+        ctx.stored_data[key] = seen
         await ctx.send_msgs([{"cmd": "Set", "key": key, "default": 0, "want_reply": False,
-                              "operations": [{"operation": "replace", "value": total}]}])
+                              "operations": [{"operation": "max", "value": seen}]}])
 
     async def received_items_check(self, ctx: "BizHawkClientContext", flags: bytes) -> None:
         """Make the game's inventory match everything received. Every write is absolute, so it is safe to repeat

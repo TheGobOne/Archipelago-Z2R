@@ -304,6 +304,7 @@ class ReceivedItemMessageTest(unittest.TestCase):
         self.ctx = SimpleNamespace(
             slot=1, team=0, items_received=[], stored_data={self.KEY: None},
             set_notify=lambda *keys: None, send_msgs=send_msgs,
+            bizhawk_ctx=None, missing_locations=set(), checked_locations=set(),
             item_names=SimpleNamespace(lookup_in_slot=lambda item, slot: f"ITEM{item}"),
             player_names={2: "Tetra", 1: "Gob-Z2R", 3: "Gob-DWR"},
         )
@@ -311,7 +312,20 @@ class ReceivedItemMessageTest(unittest.TestCase):
 
     def announce(self) -> list[str]:
         asyncio.run(self.client.announce_received(self.ctx))
-        return [text for text, _ in self.client.pickup_messages]
+        return [entry[0] for entry in self.client.pickup_messages]
+
+    def show(self, now: float) -> None:
+        """One HUD tick in side view with a free PPU buffer: writes the next queued message."""
+        async def guarded_write(_ctx, _w, _guards):
+            return True
+
+        self.client.guards = []
+        with mock.patch.object(Client.bizhawk, "guarded_write", guarded_write), \
+                mock.patch.object(Client.time, "monotonic", lambda: now):
+            asyncio.run(self.client.hud_message_check(self.ctx, Client.HUD_MODE))
+
+    def seen_sets(self) -> list:
+        return [m["operations"] for m in self.sent if m.get("cmd") == "Set"]
 
     def test_received_message_text(self) -> None:
         self.assertEqual(Client.received_message("Silver Arrow", "Tetra"), "GOT SILVER ARROW FROM TETRA")
@@ -325,7 +339,25 @@ class ReceivedItemMessageTest(unittest.TestCase):
     def test_item_that_arrived_while_away_is_shown(self) -> None:
         self.ctx.items_received = [SimpleNamespace(item=15, player=3)]  # sent while DWR was being played
         self.assertEqual(self.announce(), ["GOT ITEM15 FROM GOB-DWR"])
-        self.assertEqual(self.sent[-1]["operations"], [{"operation": "replace", "value": 1}])
+        self.assertEqual(self.seen_sets(), [])  # not counted until it is on screen
+        self.show(1.0)
+        self.assertEqual(self.seen_sets(), [[{"operation": "max", "value": 1}]])
+
+    def test_message_not_shown_before_a_switch_shows_next_time(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=15, player=2)]
+        self.announce()                     # queued, but the player leaves before reaching side view
+        self.client = Client.Z2RClient()    # a new connection after switching back
+        self.assertEqual(self.announce(), ["GOT ITEM15 FROM TETRA"])
+
+    def test_each_message_counts_as_it_shows(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=5, player=2), SimpleNamespace(item=6, player=1),
+                                   SimpleNamespace(item=7, player=2), SimpleNamespace(item=8, player=1)]
+        self.announce()
+        self.show(1.0)
+        self.assertEqual(self.ctx.stored_data[self.KEY], 1)
+        self.show(1.0 + Client.HUD_MESSAGE_SECONDS_BUSY)  # clears the first
+        self.show(2.0 + Client.HUD_MESSAGE_SECONDS_BUSY)
+        self.assertEqual(self.ctx.stored_data[self.KEY], 4)  # the last message covers the own find after it
 
     def test_items_already_shown_are_not_shown_again(self) -> None:
         self.ctx.stored_data[self.KEY] = 2
