@@ -54,6 +54,17 @@ class TestContainers(unittest.TestCase):
         fake = self.run_check(["Magic Container", "Heart Container"], {0x0783: 5, 0x0784: 5})
         self.assertEqual(fake.writes, [])
 
+    def test_new_item_plays_item_get_fanfare(self) -> None:
+        fake = self.run_check(["Heart Container"], {0x0784: 4, 0x0783: 4})
+        written = {address: value for address, value, _ in fake.writes}
+        self.assertEqual(written[Client.MUSIC_REQUEST_ADDRESS], [Client.ITEM_GET_FANFARE])
+
+    def test_basement_bit_alone_plays_no_fanfare(self) -> None:
+        # Starting containers already meet the requirement: only the basement bit is written
+        fake = self.run_check(["Magic Container"], {0x0783: 8, 0x0784: 4})
+        written = {address: value for address, value, _ in fake.writes}
+        self.assertNotIn(Client.MUSIC_REQUEST_ADDRESS, written)
+
 
 class FakeRom:
     """A "PRG ROM" with text tables in bank 3 and an AP sign placeholder for Mido (west) and Old Kasuto (east)."""

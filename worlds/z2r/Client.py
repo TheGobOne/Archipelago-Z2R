@@ -78,6 +78,11 @@ BASEMENT_ACCESS_MASK = 0x08
 MAGIC_REFILL_ADDRESS = 0x070C
 LIFE_REFILL_ADDRESS = 0x070D
 LIFE_REFILL_AMOUNT = 0xF0
+# The game's music request byte. Picking up a key item or a container writes 0x10 here (CPU $E78B and $E80C in the
+# fixed bank) to play the item-get fanfare; the sound engine reads and clears it the next frame, plays the fanfare
+# for about 3 seconds, then resumes the area music (checked in FCEUX on a Z2R seed, 2026-11-20).
+MUSIC_REQUEST_ADDRESS = 0x00EB
+ITEM_GET_FANFARE = 0x10
 # The game only counts as "in control of Link" when the game event is the main loop and the game mode has settled
 # (GameMode == GameModeCurrent) on the overworld or a side view. Item presence bits read as "collected" and the flag
 # area is meaningless on the title screen and file select, so nothing is read or written otherwise.
@@ -930,6 +935,9 @@ class Z2RClient(BizHawkClient):
             writes.append((LIFE_REFILL_ADDRESS, [LIFE_REFILL_AMOUNT], RAM))
         if desired[magic_address] > current[magic_address]:
             writes.append((MAGIC_REFILL_ADDRESS, [(desired[magic_address] << 4) & 0xFF], RAM))
+        # A new item plays the game's own item-get fanfare, as a pickup would. The basement bit alone is not an item.
+        if any(address != BASEMENT_ACCESS_ADDRESS for address, _, _ in writes):
+            writes.append((MUSIC_REQUEST_ADDRESS, [ITEM_GET_FANFARE], RAM))
         if writes:
             await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, self.guards)
 
