@@ -80,12 +80,30 @@ class HudMessageCheckTest(unittest.TestCase):
                 writes.extend(w)
             return buffer_free
 
+        async def display_message(_ctx, text):
+            self.flashed.append(text)
+
         with mock.patch.object(Client.bizhawk, "guarded_write", guarded_write), \
+                mock.patch.object(Client.bizhawk, "display_message", display_message), \
                 mock.patch.object(Client.time, "monotonic", lambda: now):
             asyncio.run(client.hud_message_check(ctx, mode))
         return writes
 
-    def test_shows_then_clears_after_four_seconds(self) -> None:
+    def setUp(self) -> None:
+        self.flashed: list[str] = []
+
+    def test_overworld_flashes_each_message_once_then_hud_shows_it(self) -> None:
+        client, ctx = Client.Z2RClient(), self.make_ctx()
+        client.guards = []
+        # built at run time, as the client builds them (equal tuple literals would be one shared object)
+        client.pickup_messages = [tuple(["GOT HAMMER FROM TETRA", None]) for _ in range(2)]
+        self.assertEqual(self.run_check(client, ctx, 0x05, 1.0), [])
+        self.run_check(client, ctx, 0x05, 2.0)
+        self.assertEqual(self.flashed, ["GOT HAMMER FROM TETRA"] * 2)  # same text twice: both shown, each once
+        shown = self.run_check(client, ctx, Client.HUD_MODE, 3.0)
+        self.assertEqual(shown[0][1][1:], Client.hud_message_bytes("GOT HAMMER FROM TETRA"))
+
+    def test_shows_then_clears_after_the_message_time(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []
         client.pickup_messages = [("GOT HAMMER", 99.0)]
@@ -93,8 +111,8 @@ class HudMessageCheckTest(unittest.TestCase):
         entry = Client.hud_message_bytes("GOT HAMMER")
         self.assertEqual(shown[0][0], Client.PPU_BUFFER_LENGTH)
         self.assertEqual(shown[0][1], bytes([len(entry) - 1]) + entry)
-        self.assertEqual(self.run_check(client, ctx, Client.HUD_MODE, 103.9), [])
-        cleared = self.run_check(client, ctx, Client.HUD_MODE, 104.0)
+        self.assertEqual(self.run_check(client, ctx, Client.HUD_MODE, 100.0 + Client.HUD_MESSAGE_SECONDS - 0.1), [])
+        cleared = self.run_check(client, ctx, Client.HUD_MODE, 100.0 + Client.HUD_MESSAGE_SECONDS)
         self.assertEqual(cleared[0][1][1:], Client.hud_message_bytes(""))
         self.assertEqual(client.pickup_messages, [])
 
@@ -135,28 +153,28 @@ class HudMessageCheckTest(unittest.TestCase):
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []
         client.pickup_messages = [("GOT HAMMER", 10.0)]
-        self.run_check(client, ctx, Client.HUD_MODE, 10.0)   # shown, 4 s
-        self.run_check(client, ctx, 0x05, 11.0)              # room change at 1 s: 3 s left
+        self.run_check(client, ctx, Client.HUD_MODE, 10.0)   # shown
+        self.run_check(client, ctx, 0x05, 11.0)              # room change after 1 s
         again = self.run_check(client, ctx, Client.HUD_MODE, 18.0)
         self.assertEqual(again[0][1][1:], Client.hud_message_bytes("GOT HAMMER"))
-        self.assertEqual(client.hud_message_until, 21.0)
+        self.assertEqual(client.hud_message_until, 18.0 + Client.HUD_MESSAGE_SECONDS - 1.0)
 
     def test_room_change_near_the_end_still_shows_long_enough_to_read(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []
         client.pickup_messages = [("GOT HAMMER", 10.0)]
         self.run_check(client, ctx, Client.HUD_MODE, 10.0)
-        self.run_check(client, ctx, 0x05, 13.5)              # 0.5 s left: still gets the busy time
-        self.run_check(client, ctx, Client.HUD_MODE, 20.0)
-        self.assertEqual(client.hud_message_until, 20.0 + Client.HUD_MESSAGE_SECONDS_BUSY)
+        self.run_check(client, ctx, 0x05, 10.0 + Client.HUD_MESSAGE_SECONDS - 0.5)  # 0.5 s left: still gets the busy time
+        self.run_check(client, ctx, Client.HUD_MODE, 30.0)
+        self.assertEqual(client.hud_message_until, 30.0 + Client.HUD_MESSAGE_SECONDS_BUSY)
 
     def test_room_change_after_the_time_is_up_shows_nothing(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []
         client.pickup_messages = [("GOT HAMMER", 10.0)]
         self.run_check(client, ctx, Client.HUD_MODE, 10.0)
-        self.run_check(client, ctx, 0x05, 15.5)  # time was up, the blank just wasn't written yet
-        self.assertEqual(self.run_check(client, ctx, Client.HUD_MODE, 20.0), [])
+        self.run_check(client, ctx, 0x05, 10.0 + Client.HUD_MESSAGE_SECONDS + 1.5)  # time was up, blank not yet written
+        self.assertEqual(self.run_check(client, ctx, Client.HUD_MODE, 30.0), [])
         self.assertIsNone(client.hud_message_until)
 
     def test_waits_outside_side_view_and_for_a_free_buffer(self) -> None:
@@ -397,7 +415,70 @@ class ReceivedItemMessageTest(unittest.TestCase):
         self.ctx.items_received = [SimpleNamespace(item=i, player=2) for i in range(7)]
         self.assertEqual(self.announce(), ["GOT 7 ITEMS FROM OTHERS"])
 
+    def test_many_starting_items_are_not_from_others(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(6)]
+        self.assertEqual(self.announce(), ["GOT 6 STARTING ITEMS"])
+        self.assertEqual(self.client.pickup_messages[0][2], 6)
+
+    def test_starting_and_other_counts_are_split(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(3)]             + [SimpleNamespace(item=i, player=2) for i in range(3)]
+        self.assertEqual(self.announce(), ["GOT 3 STARTING ITEMS", "GOT 3 ITEMS FROM OTHERS"])
+        self.assertEqual([m[2] for m in self.client.pickup_messages], [3, 6])  # the last carries the total
+
+    def test_count_lines_fit_the_hud_and_use_hud_characters(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(12)]             + [SimpleNamespace(item=i, player=2) for i in range(12)]
+        for text in self.announce():
+            self.assertLessEqual(len(text), Client.HUD_MESSAGE_WIDTH)
+            self.assertTrue(set(text) <= Client.HUD_CHARACTERS)
+
     def test_received_messages_wait_for_side_view(self) -> None:
         self.ctx.items_received = [SimpleNamespace(item=5, player=2)]
         self.announce()
         self.assertIsNone(self.client.pickup_messages[0][1])  # never dropped as stale
+
+
+class ServerOfflineTest(unittest.TestCase):
+    """The HUD says so when the AP server is lost (the connector's AP OFFLINE only covers losing the client)."""
+
+    def run_watcher(self, client, ctx, now):
+        writes = []
+
+        async def read(_ctx, reads):
+            return [bytes([Client.GAME_EVENT_MAIN_LOOP]) if size == 1 else bytes([Client.HUD_MODE] * 2)
+                    for _a, size, _d in reads]
+
+        async def guarded_write(_ctx, w, _guards):
+            writes.extend(w)
+            return True
+
+        with mock.patch.object(Client.bizhawk, "read", read),                 mock.patch.object(Client.bizhawk, "guarded_write", guarded_write),                 mock.patch.object(Client.time, "monotonic", lambda: now):
+            asyncio.run(client.game_watcher(ctx))
+        return writes
+
+    def ctx(self, slot_data):
+        return SimpleNamespace(server=None, slot_data=slot_data, bizhawk_ctx=None)
+
+    def test_server_loss_shows_after_a_few_seconds(self) -> None:
+        client = Client.Z2RClient()
+        ctx = self.ctx({"rom_seed": ""})
+        self.assertEqual(self.run_watcher(client, ctx, 10.0), [])  # just lost
+        writes = self.run_watcher(client, ctx, 10.0 + Client.SERVER_OFFLINE_AFTER)
+        self.assertEqual(writes[0][1][1:], Client.hud_message_bytes(Client.SERVER_OFFLINE_TEXT))
+        self.assertTrue(client.offline_hud_shown)
+
+    def test_offline_text_fits_the_hud(self) -> None:
+        self.assertLessEqual(len(Client.SERVER_OFFLINE_TEXT), Client.HUD_MESSAGE_WIDTH)
+        self.assertTrue(set(Client.SERVER_OFFLINE_TEXT) <= Client.HUD_CHARACTERS)
+
+    def test_nothing_before_the_client_ever_connected(self) -> None:
+        client = Client.Z2RClient()
+        ctx = self.ctx(None)
+        self.run_watcher(client, ctx, 10.0)
+        self.assertEqual(self.run_watcher(client, ctx, 100.0), [])
+
+    def test_repeats_not_every_frame(self) -> None:
+        client = Client.Z2RClient()
+        ctx = self.ctx({})
+        self.run_watcher(client, ctx, 10.0)
+        self.assertEqual(len(self.run_watcher(client, ctx, 14.0)), 1)
+        self.assertEqual(self.run_watcher(client, ctx, 15.0), [])

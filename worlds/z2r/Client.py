@@ -3,6 +3,7 @@ import random
 import time
 from typing import NamedTuple, TYPE_CHECKING
 
+from BaseClasses import ItemClassification
 from NetUtils import ClientStatus
 
 import worlds._bizhawk as bizhawk
@@ -166,9 +167,12 @@ HUD_MODE = 0x0B  # side view, the only mode with the HUD
 PPU_BUFFER = 0x0302  # PpuAddrHi; $FF when the buffer is empty
 HUD_MESSAGE_ADDRESS = 0x2022  # nametable row 1, column 2
 HUD_MESSAGE_WIDTH = 28
-HUD_MESSAGE_SECONDS = 4.0
+HUD_MESSAGE_SECONDS = 10.0
 HUD_MESSAGE_SECONDS_BUSY = 2.5  # each message's time when more are waiting
+SERVER_OFFLINE_AFTER = 3.0  # seconds without the AP server before the HUD says so (as the FCEUX AP OFFLINE text)
+SERVER_OFFLINE_TEXT = "AP SERVER OFFLINE"
 ERROR_HUD_SECONDS = 8.0  # how often an error is put back in the HUD row
+EMULATOR_MESSAGE_SECONDS = 3.0  # gap between queued emulator messages (overworld item text)
 RECEIVED_CATCH_UP_LIMIT = 4  # more received items than this at once show as one count
 HUD_MESSAGE_STALE = 10.0  # a message older than this is dropped: it no longer matches what just happened
 BLANK_TILE = 0xF4
@@ -447,8 +451,11 @@ class Z2RClient(BizHawkClient):
     hud_message_text: str  # the message in the HUD now, to show again after a room change
     hud_message_left: float | None  # seconds it had left when a room change wiped it
     next_error_hud: float
+    server_lost_at: float | None  # when the AP server connection was first seen gone (None while connected)
+    offline_hud_shown: bool  # the HUD row shows SERVER_OFFLINE_TEXT and must be blanked after a reconnect
     no_slots_logged: bool
     sprite_banks: list[int] | None  # CHR banks holding the AP item tiles, found at the first side view
+    sprite_fixed: bool  # the AP item's left half is in the fixed tile (item_sprites.FIXED_LEFT_ADDRESS), not the 1-up's
     sprite_wide: bool  # the ROM draws the AP item 16 pixels wide (item_sprites.RIGHT_TILE_ADDRESS); tiles are then
     # 64 bytes, left then right
     sprite_logo: bytes  # the AP item tiles as the ROM has them
@@ -477,13 +484,17 @@ class Z2RClient(BizHawkClient):
         self.pickups_scout_retry = 0.0
         self.next_item_text_check = 0.0
         self.pickup_messages = []
+        self.messages_flashed = []
         self.hud_queued = 0
         self.hud_message_until = None
         self.hud_message_text = ""
         self.hud_message_left = None
         self.next_error_hud = 0.0
+        self.server_lost_at = None
+        self.offline_hud_shown = False
         self.no_slots_logged = False
         self.sprite_banks = None
+        self.sprite_fixed = False
         self.sprite_wide = False
         self.sprite_logo = b""
         self.sprite_sources = {}
@@ -520,19 +531,28 @@ class Z2RClient(BizHawkClient):
         self.pickups_scout_retry = 0.0
         self.next_item_text_check = 0.0
         self.pickup_messages = []
+        self.messages_flashed = []
         self.hud_queued = 0
         self.hud_message_until = None
         self.hud_message_text = ""
         self.hud_message_left = None
         self.next_error_hud = 0.0
+        self.server_lost_at = None
+        self.offline_hud_shown = False
         self.no_slots_logged = False
         self.sprite_banks = None
+        self.sprite_fixed = False
         self.sprite_wide = False
         self.sprite_logo = b""
         self.sprite_sources = {}
         self.sprite_shown = None
         self.palette_address = None
         self.palette_shown = None
+        # FCEUX shows one emulator message at a time: space queued ones out so each can be read
+        try:
+            await bizhawk.set_message_interval(ctx.bizhawk_ctx, EMULATOR_MESSAGE_SECONDS)
+        except bizhawk.RequestFailedError:
+            pass
         ctx.game = self.game
         ctx.items_handling = 0b111
         ctx.want_slot_data = True
@@ -550,7 +570,11 @@ class Z2RClient(BizHawkClient):
         ctx.auth = self.slot_name
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
-        if ctx.server is None or ctx.server.socket.closed or ctx.slot_data is None:
+        if ctx.server is None or ctx.server.socket.closed:
+            await self.server_offline_check(ctx)
+            return
+        self.server_lost_at = None
+        if ctx.slot_data is None:
             return
 
         # The signature holds the first 32 characters of the seed, with non-ASCII characters replaced by "?"
@@ -596,6 +620,8 @@ class Z2RClient(BizHawkClient):
                 return
             flags, game_complete = state[0], state[1][0]
 
+            if self.offline_hud_shown and mode == HUD_MODE and await self.write_hud_message(ctx, ""):
+                self.offline_hud_shown = False  # connected again: blank the offline text
             await self.location_check(ctx, flags)
             await self.hud_message_check(ctx, mode)
             await self.item_sprite_check(ctx, mode)
@@ -693,6 +719,15 @@ class Z2RClient(BizHawkClient):
             await ctx.send_msgs([{"cmd": "LocationScouts", "locations": sorted(wanted), "create_as_hint": 0}])
             self.pickups_scout_retry = now + SCOUT_RETRY_SECONDS
         if mode != HUD_MODE:
+            # No HUD outside side view (the overworld): show each new message once as an emulator message right away.
+            # It still shows in the HUD at the next side view.
+            # (kept by identity: two queued messages can have the same text)
+            flashed = self.messages_flashed
+            self.messages_flashed = [entry for entry in self.pickup_messages if any(entry is f for f in flashed)]
+            for entry in self.pickup_messages:
+                if not any(entry is f for f in self.messages_flashed):
+                    self.messages_flashed.append(entry)
+                    await bizhawk.display_message(ctx.bizhawk_ctx, entry[0])
             if self.hud_message_until is not None:
                 # a room change redraws the HUD and wipes the message: show it again in the next room, for the time
                 # it had left (at least HUD_MESSAGE_SECONDS_BUSY, so it can be read)
@@ -741,6 +776,8 @@ class Z2RClient(BizHawkClient):
             info = known.get(LOCATION_NAME_TO_ID.get(name))
             if info is None:
                 break  # not scouted yet: keep the logo
+            if info.flags & ItemClassification.progression:
+                palette = item_sprites.AP_PROGRESSION_PALETTE  # another player's progression item: red logo
             if info.player == ctx.slot:
                 item_name = ctx.item_names.lookup_in_game(info.item, self.game)
                 draw = item_sprites.wide_item_sprite if self.sprite_wide else item_sprites.item_sprite
@@ -753,8 +790,11 @@ class Z2RClient(BizHawkClient):
         if wanted == self.sprite_shown and palette == self.palette_shown:
             return
         left = wanted[:item_sprites.TILE_BYTES]
-        writes = [(bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET, left, item_sprites.CHR_DOMAIN)
-                  for bank in self.sprite_banks]
+        if self.sprite_fixed:
+            writes = [(item_sprites.FIXED_LEFT_ADDRESS, left, item_sprites.CHR_DOMAIN)]
+        else:
+            writes = [(bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET, left, item_sprites.CHR_DOMAIN)
+                      for bank in self.sprite_banks]
         if self.sprite_wide:
             writes.append((item_sprites.RIGHT_TILE_ADDRESS, wanted[item_sprites.TILE_BYTES:], item_sprites.CHR_DOMAIN))
         if self.palette_address is not None:
@@ -777,17 +817,25 @@ class Z2RClient(BizHawkClient):
         reads += [(address, item_sprites.TILE_BYTES, item_sprites.CHR_DOMAIN)
                   for address in item_sprites.SOURCE_ADDRESSES]
         reads.append((item_sprites.RIGHT_TILE_ADDRESS, item_sprites.TILE_BYTES, item_sprites.CHR_DOMAIN))
+        reads.append((item_sprites.FIXED_LEFT_ADDRESS, item_sprites.TILE_BYTES, item_sprites.CHR_DOMAIN))
         reads.append((item_sprites.PALETTE_LOAD, 3, item_sprites.PRG_DOMAIN))
         data = [bytes(value) for value in await bizhawk.read(ctx.bizhawk_ctx, reads)]
-        ap_tiles, sources, right = data[:len(banks)], data[len(banks):-2], data[-2]
+        ap_tiles, sources, right, fixed = data[:len(banks)], data[len(banks):-3], data[-3], data[-2]
         self.palette_address = item_sprites.palette_address(data[-1])
         if self.palette_address is not None:
             # may still hold an item's palette from before a client restart; the next check fixes it if so
             palette = await bizhawk.read(ctx.bizhawk_ctx, [(self.palette_address, 1, item_sprites.PRG_DOMAIN)])
             self.palette_shown = bytes(palette[0])[0]
         self.sprite_sources = dict(zip(item_sprites.SOURCE_ADDRESSES, sources))
-        reference = ap_tiles[item_sprites.REFERENCE_BANK]
-        self.sprite_banks = [bank for bank, tiles in zip(banks, ap_tiles) if tiles == reference]
+        # Newer Z2R builds keep the AP item's left half in one fixed tile of the item sprite page, so there is one copy
+        # and the 1-up's tiles in every bank stay the 1-up's. Older builds leave that tile blank and use the 1-up's.
+        self.sprite_fixed = fixed != item_sprites.BLANK
+        if self.sprite_fixed:
+            reference = fixed
+            self.sprite_banks = []
+        else:
+            reference = ap_tiles[item_sprites.REFERENCE_BANK]
+            self.sprite_banks = [bank for bank, tiles in zip(banks, ap_tiles) if tiles == reference]
         # The client may have been restarted while an item was drawn: then the CHR has that item, not the logo
         # A ROM with the 16 pixel AP item has the logo's right half (or a drawn item's) in the right tile; older ROMs
         # leave it blank. (A restart while an 8 pixel item was drawn also leaves it blank: that room's item is then
@@ -802,6 +850,18 @@ class Z2RClient(BizHawkClient):
         self.sprite_logo = logo + item_sprites.AP_LOGO_RIGHT if self.sprite_wide else logo
         self.sprite_shown = reference + right if self.sprite_wide else reference
         return True
+
+    async def server_offline_check(self, ctx: "BizHawkClientContext") -> None:
+        """The AP server connection is gone: after SERVER_OFFLINE_AFTER seconds say so in the HUD row (the connector's
+        AP OFFLINE text only covers losing this client). Only after the client had slot data, so starting the game
+        before the client has connected shows nothing."""
+        now = time.monotonic()
+        if self.server_lost_at is None:
+            self.server_lost_at = now
+        if getattr(ctx, "slot_data", None) is None or now - self.server_lost_at < SERVER_OFFLINE_AFTER:
+            return
+        await self.show_error_on_hud(ctx, SERVER_OFFLINE_TEXT)
+        self.offline_hud_shown = True
 
     async def show_error_on_hud(self, ctx: "BizHawkClientContext", text: str) -> None:
         """Put an error in the HUD row (every ERROR_HUD_SECONDS, since a redraw erases it), for problems the player
@@ -881,7 +941,14 @@ class Z2RClient(BizHawkClient):
         if not new:
             await self.save_hud_seen(ctx, total)  # nothing to show
         elif len(new) > RECEIVED_CATCH_UP_LIMIT:
-            self.pickup_messages.append((f"GOT {len(new)} ITEMS FROM OTHERS", None, total))
+            # starting items come from the server, not from other players: count each kind in its own line
+            groups = [("GOT {} STARTING ITEMS", [e for e in new if not e[2]]),
+                      ("GOT {} ITEMS FROM OTHERS", [e for e in new if e[2]])]
+            groups = [(text, group) for text, group in groups if group]
+            for position, (text, group) in enumerate(groups):
+                seen = total if position == len(groups) - 1 else max(e[0] for e in group)
+                line = text.format(len(group))
+                self.pickup_messages.append((line.replace("ITEMS", "ITEM") if len(group) == 1 else line, None, seen))
         else:
             # no time stamp: these wait for side view however long that takes, instead of going stale.
             # The last one also covers any own finds after it.
@@ -942,11 +1009,16 @@ class Z2RClient(BizHawkClient):
             writes.append((LIFE_REFILL_ADDRESS, [LIFE_REFILL_AMOUNT], RAM))
         if desired[magic_address] > current[magic_address]:
             writes.append((MAGIC_REFILL_ADDRESS, [(desired[magic_address] << 4) & 0xFF], RAM))
+        if not writes:
+            return
+        if not await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, self.guards):
+            return
         # A new item plays the game's own item-get fanfare, as a pickup would. The basement bit alone is not an item.
+        # Consumables (keys, 1-ups, jars, P-bags) are given in consumable_check and stay silent. Only request the
+        # fanfare when no other sound request is pending, so the game's own request that frame is not lost.
         if any(address != BASEMENT_ACCESS_ADDRESS for address, _, _ in writes):
-            writes.append((MUSIC_REQUEST_ADDRESS, [ITEM_GET_FANFARE], RAM))
-        if writes:
-            await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, self.guards)
+            await bizhawk.guarded_write(ctx.bizhawk_ctx, [(MUSIC_REQUEST_ADDRESS, [ITEM_GET_FANFARE], RAM)],
+                                        [*self.guards, (MUSIC_REQUEST_ADDRESS, [0], RAM)])
 
     def wizard_towns(self, ctx: "BizHawkClientContext") -> dict[int, int]:
         """Location ID -> town type for each wizard location in this slot."""

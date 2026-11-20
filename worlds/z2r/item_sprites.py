@@ -1,7 +1,7 @@
 """Real item sprites for this slot's own items.
 
-Z2R draws every AP item with one 8x16 sprite: the 1-up's tiles, which the Z2R app replaces with half of the
-Archipelago logo. The ROM is built before the multiworld exists, so it can't know what each location holds. The client
+Z2R draws every AP item with one 8x16 sprite. Older builds use the 1-up's tiles for it, which the Z2R app replaces
+with half of the Archipelago logo; the newest build uses its own tile (FIXED_LEFT_ADDRESS) and keeps the 1-up's. The ROM is built before the multiworld exists, so it can't know what each location holds. The client
 does: when Link is in a side view room whose item is one of this slot's own Z2R items, it copies that item's tiles over
 the AP tiles in every CHR bank, and puts the logo back in any other room.
 
@@ -26,6 +26,9 @@ ONE_UP_TILES = bytes.fromhex("556086468659865d9a010d5b1b5a55308647866a865d9b0376
 RIGHT_TILE_ADDRESS = 0x1A060
 AP_LOGO_RIGHT = bytes.fromhex("00020201000100380307037d7dffc6387cdcfb77670707037cfcfb7777070703")
 BLANK = bytes(TILE_BYTES)
+# Newest Z2R builds draw the AP item as tiles $FD (left) and $C7 (right) and leave the 1-up's tiles alone. The left half
+# is at CHR 0x1A3C0 (tiles $FC/$FD of the item sprite page), blank in older ROMs.
+FIXED_LEFT_ADDRESS = 0x1A3C0
 
 # Palettes. Items $10 and up take their sprite palette from ItemPaletteTable (FullItemShuffle.s in the app), which
 # the code at $F120 in bank 7 reads with "lda ItemPaletteTable - $10,x". The AP item is item $26 there, with palette 3
@@ -34,6 +37,7 @@ PRG_DOMAIN = "PRG ROM"
 PALETTE_LOAD = 0x1F120  # PRG ROM offset of that lda: $BD, then the table's address - $10
 AP_ITEM_ID = 0x26
 AP_PALETTE = 3
+AP_PROGRESSION_PALETTE = 2  # the red jar's: the logo for a progression item
 ITEM_PALETTES = {"Blue Magic Jar": 3, "Red Magic Jar": 2, "1-Up": 0}  # every other item: 1
 
 

@@ -17,10 +17,14 @@ class FakeEmulator:
     """CHR with the AP logo in banks 0-12 at 0xA80 (bank 13-15 hold something else) and RAM for one room."""
 
     def __init__(self, ram: dict[int, int], chr_banks: int = 16, palette_table: bool = True,
-                 wide: bool = False) -> None:
+                 wide: bool = False, fixed: bool = False) -> None:
         self.chr = bytearray(chr_banks * item_sprites.BANK_SIZE)
         for bank in range(13):
             at = bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET
+            self.chr[at:at + 32] = item_sprites.ONE_UP_TILES if fixed else LOGO
+        if fixed:  # the newest Z2R build: the logo's left half is in its own tile, the 1-up's tiles are the 1-up's
+            wide = True
+            at = item_sprites.FIXED_LEFT_ADDRESS
             self.chr[at:at + 32] = LOGO
         if wide:  # a ROM from a Z2R build with the 16 pixel AP item
             self.chr[item_sprites.RIGHT_TILE_ADDRESS:item_sprites.RIGHT_TILE_ADDRESS + 32] = item_sprites.AP_LOGO_RIGHT
@@ -81,7 +85,7 @@ def make_ctx(placements: dict[str, tuple[str, int]], slot: int = 1):
     names = {ITEM_NAME_TO_ID[item]: item for item, _player in placements.values()}
     return SimpleNamespace(
         bizhawk_ctx=None, slot=slot, slot_data={"locations": LOCATIONS},
-        locations_info={LOCATION_NAME_TO_ID[location]: SimpleNamespace(item=ITEM_NAME_TO_ID[item], player=player)
+        locations_info={LOCATION_NAME_TO_ID[location]: SimpleNamespace(item=ITEM_NAME_TO_ID[item], player=player, flags=0)
                         for location, (item, player) in placements.items()},
         item_names=SimpleNamespace(lookup_in_game=lambda item, game: names[item]))
 
@@ -223,6 +227,42 @@ class TestItemSpriteCheck(unittest.TestCase):
         emulator.ram.update(CAVE_ROOM)
         run(client, ctx, emulator)
         self.assertEqual(emulator.prg[PALETTE_BYTE], item_sprites.AP_PALETTE)
+
+    def test_other_players_progression_item_gets_the_red_logo(self) -> None:
+        emulator = FakeEmulator(PALACE_ROOM)
+        ctx = make_ctx({"PALACE1:item1": ("Candle", 2)})
+        ctx.locations_info[LOCATION_NAME_TO_ID["PALACE1:item1"]].flags = 0b001  # progression
+        run(Client.Z2RClient(), ctx, emulator)
+        self.assertEqual(emulator.ap_tiles(0), LOGO)
+        self.assertEqual(emulator.prg[PALETTE_BYTE], item_sprites.AP_PROGRESSION_PALETTE)
+
+    def test_fixed_tile_rom_draws_the_item_there_and_leaves_the_one_up_tiles(self) -> None:
+        emulator = FakeEmulator(PALACE_ROOM, fixed=True)
+        run(Client.Z2RClient(), make_ctx({"PALACE1:item1": ("Candle", 1)}), emulator)
+        at = item_sprites.FIXED_LEFT_ADDRESS
+        self.assertEqual(bytes(emulator.chr[at:at + 32]), CANDLE)
+        self.assertEqual(emulator.ap_tiles(0), item_sprites.ONE_UP_TILES)
+        self.assertEqual(emulator.ap_tiles(12), item_sprites.ONE_UP_TILES)
+
+    def test_fixed_tile_rom_logo_comes_back(self) -> None:
+        emulator = FakeEmulator(dict(PALACE_ROOM), fixed=True)
+        client = Client.Z2RClient()
+        ctx = make_ctx({"PALACE1:item1": ("Candle", 1), "WEST_CAVE_HEART_CONTAINER": ("Hammer", 2)})
+        run(client, ctx, emulator)
+        emulator.ram.update(CAVE_ROOM)
+        run(client, ctx, emulator)
+        at = item_sprites.FIXED_LEFT_ADDRESS
+        self.assertEqual(bytes(emulator.chr[at:at + 32]), LOGO)
+        self.assertEqual(emulator.right_tiles(), item_sprites.AP_LOGO_RIGHT)
+
+    def test_fixed_tile_rom_restarted_client_restores_the_logo(self) -> None:
+        emulator = FakeEmulator(dict(PALACE_ROOM), fixed=True)
+        at = item_sprites.FIXED_LEFT_ADDRESS
+        emulator.chr[at:at + 32] = CANDLE  # an item was drawn when the old client stopped
+        ctx = make_ctx({"WEST_CAVE_HEART_CONTAINER": ("Hammer", 2)})
+        emulator.ram.update(CAVE_ROOM)
+        run(Client.Z2RClient(), ctx, emulator)
+        self.assertEqual(bytes(emulator.chr[at:at + 32]), LOGO)
 
     def test_jar_uses_the_jars_palette(self) -> None:
         emulator = FakeEmulator(PALACE_ROOM)
