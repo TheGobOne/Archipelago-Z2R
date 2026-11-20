@@ -20,6 +20,12 @@ AP_LOGO = bytes.fromhex("0002007dfdffc6380307037dfcfec60054b4ab27570707032848535
 # The 1-up's own tiles from the vanilla ROM (bank 4, 0xA80). Z2R's seed ROM has the logo there, so a 1-Up can't be copied
 # from the ROM the way other items are.
 ONE_UP_TILES = bytes.fromhex("556086468659865d9a010d5b1b5a55308647866a865d9b0376c1037681037999")
+# Newer Z2R builds draw the AP item 16 pixels wide: a second 8x16 sprite, tile $C7, holds the logo's right half. Its
+# tiles are at CHR 0x1A060, in the item sprite page that every room maps, so there is one copy. Older ROMs leave it blank.
+# The game draws that second sprite flipped horizontally, so its tiles are stored mirrored (ArchipelagoLogo.LogoRight).
+RIGHT_TILE_ADDRESS = 0x1A060
+AP_LOGO_RIGHT = bytes.fromhex("00020201000100380307037d7dffc6387cdcfb77670707037cfcfb7777070703")
+BLANK = bytes(TILE_BYTES)
 
 # Palettes. Items $10 and up take their sprite palette from ItemPaletteTable (FullItemShuffle.s in the app), which
 # the code at $F120 in bank 7 reads with "lda ItemPaletteTable - $10,x". The AP item is item $26 there, with palette 3
@@ -91,7 +97,7 @@ ITEM_TILES: dict[str, list[Tile]] = {
     "Jump Spell": [Tile(0x1A140), Tile(0x1A120, 1)],
     "Life Spell": [Tile(0x1A160), Tile(0x1A180, 1, True)],
     "Fairy Spell": [Tile(0x86A0)],
-    "Fire Spell": [Tile(0x0520)],
+    "Fire Spell": [Tile(0x1A0E0), Tile(0x1A100, 1)],
     "Reflect Spell": [Tile(0x1A1A0), Tile(0x1A1C0, 1, True)],
     "Spell Spell": [Tile(0x1A300), Tile(0x1A300, 1, True)],
     "Thunder Spell": [Tile(0x1A360), Tile(0x1A380, 1, True)],
@@ -137,12 +143,31 @@ def item_sprite(name: str, sources: dict[int, bytes]) -> bytes | None:
         # strongest color of each pair so the outline survives, and mirror it, so both sides match
         half = [[max(row[2 * x], row[2 * x + 1]) for x in range(4)] for row in decode(sources[tiles[0].address])]
         return encode([row + row[::-1] for row in half])
+    wide = full_width(tiles, sources)
+    return encode([[row[2 * x] or row[2 * x + 1] for x in range(8)] for row in wide])
+
+
+def full_width(tiles: list[Tile], sources: dict[int, bytes]) -> list[list[int]]:
+    """16 rows of 16 pixel values: the item as the game draws it."""
     wide = [[0] * 16 for _ in range(16)]
     for tile in tiles:
         for y, row in enumerate(decode(sources[tile.address])):
             for x, value in enumerate(reversed(row) if tile.flip else row):
                 wide[y][tile.x * 8 + x] = value
-    return encode([[row[2 * x] or row[2 * x + 1] for x in range(8)] for row in wide])
+    return wide
+
+
+def wide_item_sprite(name: str, sources: dict[int, bytes]) -> bytes | None:
+    """Both AP sprites drawn as this Z2R item, for a ROM with the 16 pixel AP item: the left tiles, then the right
+    ones (RIGHT_TILE_ADDRESS), 64 bytes. The game flips the right sprite, so its tiles are stored mirrored. An 8 pixel
+    item gets a blank right half, as the game draws it. None if it isn't a Z2R item with a sprite."""
+    if name == "1-Up":
+        return ONE_UP_TILES + BLANK
+    tiles = ITEM_TILES.get(name)
+    if not tiles or any(tile.address not in sources for tile in tiles):
+        return None
+    wide = full_width(tiles, sources)
+    return encode([row[:8] for row in wide]) + encode([row[15:7:-1] for row in wide])
 
 
 def flag_table(world: int, region: int) -> int | None:

@@ -435,6 +435,8 @@ class Z2RClient(BizHawkClient):
     next_error_hud: float
     no_slots_logged: bool
     sprite_banks: list[int] | None  # CHR banks holding the AP item tiles, found at the first side view
+    sprite_wide: bool  # the ROM draws the AP item 16 pixels wide (item_sprites.RIGHT_TILE_ADDRESS); tiles are then
+    # 64 bytes, left then right
     sprite_logo: bytes  # the AP item tiles as the ROM has them
     sprite_sources: dict[int, bytes]  # the ROM's item tiles, by CHR address
     sprite_shown: bytes | None  # what the AP item tiles were last set to
@@ -467,6 +469,7 @@ class Z2RClient(BizHawkClient):
         self.next_error_hud = 0.0
         self.no_slots_logged = False
         self.sprite_banks = None
+        self.sprite_wide = False
         self.sprite_logo = b""
         self.sprite_sources = {}
         self.sprite_shown = None
@@ -508,6 +511,7 @@ class Z2RClient(BizHawkClient):
         self.next_error_hud = 0.0
         self.no_slots_logged = False
         self.sprite_banks = None
+        self.sprite_wide = False
         self.sprite_logo = b""
         self.sprite_sources = {}
         self.sprite_shown = None
@@ -720,7 +724,8 @@ class Z2RClient(BizHawkClient):
                 break  # not scouted yet: keep the logo
             if info.player == ctx.slot:
                 item_name = ctx.item_names.lookup_in_game(info.item, self.game)
-                sprite = item_sprites.item_sprite(item_name, self.sprite_sources)
+                draw = item_sprites.wide_item_sprite if self.sprite_wide else item_sprites.item_sprite
+                sprite = draw(item_name, self.sprite_sources)
                 if sprite:
                     wanted, palette = sprite, item_sprites.item_palette(item_name)
             break
@@ -728,8 +733,11 @@ class Z2RClient(BizHawkClient):
             palette = self.palette_shown  # an older ROM without the palette table: leave its palette alone
         if wanted == self.sprite_shown and palette == self.palette_shown:
             return
-        writes = [(bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET, wanted, item_sprites.CHR_DOMAIN)
+        left = wanted[:item_sprites.TILE_BYTES]
+        writes = [(bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET, left, item_sprites.CHR_DOMAIN)
                   for bank in self.sprite_banks]
+        if self.sprite_wide:
+            writes.append((item_sprites.RIGHT_TILE_ADDRESS, wanted[item_sprites.TILE_BYTES:], item_sprites.CHR_DOMAIN))
         if self.palette_address is not None:
             writes.append((self.palette_address, bytes([palette]), item_sprites.PRG_DOMAIN))
         room_guards = [(item_sprites.WORLD_NUMBER, [world], RAM), (item_sprites.REGION_NUMBER, [region], RAM),
@@ -749,9 +757,10 @@ class Z2RClient(BizHawkClient):
                   item_sprites.CHR_DOMAIN) for bank in banks]
         reads += [(address, item_sprites.TILE_BYTES, item_sprites.CHR_DOMAIN)
                   for address in item_sprites.SOURCE_ADDRESSES]
+        reads.append((item_sprites.RIGHT_TILE_ADDRESS, item_sprites.TILE_BYTES, item_sprites.CHR_DOMAIN))
         reads.append((item_sprites.PALETTE_LOAD, 3, item_sprites.PRG_DOMAIN))
         data = [bytes(value) for value in await bizhawk.read(ctx.bizhawk_ctx, reads)]
-        ap_tiles, sources = data[:len(banks)], data[len(banks):-1]
+        ap_tiles, sources, right = data[:len(banks)], data[len(banks):-2], data[-2]
         self.palette_address = item_sprites.palette_address(data[-1])
         if self.palette_address is not None:
             # may still hold an item's palette from before a client restart; the next check fixes it if so
@@ -761,9 +770,18 @@ class Z2RClient(BizHawkClient):
         reference = ap_tiles[item_sprites.REFERENCE_BANK]
         self.sprite_banks = [bank for bank, tiles in zip(banks, ap_tiles) if tiles == reference]
         # The client may have been restarted while an item was drawn: then the CHR has that item, not the logo
-        drawn = {item_sprites.item_sprite(name, self.sprite_sources) for name in item_sprites.ITEM_TILES}
-        self.sprite_logo = item_sprites.AP_LOGO if reference in drawn else reference
-        self.sprite_shown = reference
+        # A ROM with the 16 pixel AP item has the logo's right half (or a drawn item's) in the right tile; older ROMs
+        # leave it blank. (A restart while an 8 pixel item was drawn also leaves it blank: that room's item is then
+        # squeezed until the next restart.)
+        self.sprite_wide = right != item_sprites.BLANK
+        names = [*item_sprites.ITEM_TILES, "1-Up"]
+        drawn = {item_sprites.item_sprite(name, self.sprite_sources) for name in names}
+        if self.sprite_wide:
+            drawn |= {wide[:item_sprites.TILE_BYTES] for name in names
+                      if (wide := item_sprites.wide_item_sprite(name, self.sprite_sources))}
+        logo = item_sprites.AP_LOGO if reference in drawn else reference
+        self.sprite_logo = logo + item_sprites.AP_LOGO_RIGHT if self.sprite_wide else logo
+        self.sprite_shown = reference + right if self.sprite_wide else reference
         return True
 
     async def show_error_on_hud(self, ctx: "BizHawkClientContext", text: str) -> None:
