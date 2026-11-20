@@ -85,7 +85,7 @@ class HudMessageCheckTest(unittest.TestCase):
             asyncio.run(client.hud_message_check(ctx, mode))
         return writes
 
-    def test_shows_then_clears_after_five_seconds(self) -> None:
+    def test_shows_then_clears_after_four_seconds(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []
         client.pickup_messages = [("GOT HAMMER", 99.0)]
@@ -93,8 +93,8 @@ class HudMessageCheckTest(unittest.TestCase):
         entry = Client.hud_message_bytes("GOT HAMMER")
         self.assertEqual(shown[0][0], Client.PPU_BUFFER_LENGTH)
         self.assertEqual(shown[0][1], bytes([len(entry) - 1]) + entry)
-        self.assertEqual(self.run_check(client, ctx, Client.HUD_MODE, 104.9), [])
-        cleared = self.run_check(client, ctx, Client.HUD_MODE, 105.0)
+        self.assertEqual(self.run_check(client, ctx, Client.HUD_MODE, 103.9), [])
+        cleared = self.run_check(client, ctx, Client.HUD_MODE, 104.0)
         self.assertEqual(cleared[0][1][1:], Client.hud_message_bytes(""))
         self.assertEqual(client.pickup_messages, [])
 
@@ -135,18 +135,18 @@ class HudMessageCheckTest(unittest.TestCase):
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []
         client.pickup_messages = [("GOT HAMMER", 10.0)]
-        self.run_check(client, ctx, Client.HUD_MODE, 10.0)   # shown, 5 s
-        self.run_check(client, ctx, 0x05, 11.0)              # room change at 1 s: 4 s left
+        self.run_check(client, ctx, Client.HUD_MODE, 10.0)   # shown, 4 s
+        self.run_check(client, ctx, 0x05, 11.0)              # room change at 1 s: 3 s left
         again = self.run_check(client, ctx, Client.HUD_MODE, 18.0)
         self.assertEqual(again[0][1][1:], Client.hud_message_bytes("GOT HAMMER"))
-        self.assertEqual(client.hud_message_until, 22.0)
+        self.assertEqual(client.hud_message_until, 21.0)
 
     def test_room_change_near_the_end_still_shows_long_enough_to_read(self) -> None:
         client, ctx = Client.Z2RClient(), self.make_ctx()
         client.guards = []
         client.pickup_messages = [("GOT HAMMER", 10.0)]
         self.run_check(client, ctx, Client.HUD_MODE, 10.0)
-        self.run_check(client, ctx, 0x05, 14.9)
+        self.run_check(client, ctx, 0x05, 13.5)              # 0.5 s left: still gets the busy time
         self.run_check(client, ctx, Client.HUD_MODE, 20.0)
         self.assertEqual(client.hud_message_until, 20.0 + Client.HUD_MESSAGE_SECONDS_BUSY)
 
