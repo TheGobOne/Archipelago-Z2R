@@ -10,29 +10,38 @@ from ..Locations import LOCATION_NAME_TO_ID
 LOGO = item_sprites.AP_LOGO
 CANDLE = bytes(range(32))
 HEART_HALF = bytes([0xF0] * 8 + [0x00] * 8 + [0x0F] * 8 + [0x00] * 8)  # top: left 4 pixels; bottom: right 4
+PALETTE_BYTE = 0x1F631  # $F60B + $26 in bank 7 (PRG 0x1C000)
 
 
 class FakeEmulator:
     """CHR with the AP logo in banks 0-12 at 0xA80 (bank 13-15 hold something else) and RAM for one room."""
 
-    def __init__(self, ram: dict[int, int], chr_banks: int = 16) -> None:
+    def __init__(self, ram: dict[int, int], chr_banks: int = 16, palette_table: bool = True) -> None:
         self.chr = bytearray(chr_banks * item_sprites.BANK_SIZE)
         for bank in range(13):
             at = bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET
             self.chr[at:at + 32] = LOGO
         self.chr[0x88C0:0x88E0] = CANDLE
         self.chr[0x1800:0x1820] = HEART_HALF
+        # bank 7's "lda $F60B,x" and the AP item's palette byte, as in the seed tested in FCEUX
+        self.prg = bytearray(0x40000)
+        if palette_table:
+            self.prg[item_sprites.PALETTE_LOAD:item_sprites.PALETTE_LOAD + 3] = bytes([0xBD, 0x0B, 0xF6])
+            self.prg[PALETTE_BYTE] = item_sprites.AP_PALETTE
         self.ram = ram
         self.write_calls = 0
 
     async def get_memory_size(self, _ctx, _domain):
         return len(self.chr)
 
+    def domain(self, name: str) -> bytearray:
+        return {item_sprites.CHR_DOMAIN: self.chr, item_sprites.PRG_DOMAIN: self.prg}[name]
+
     async def read(self, _ctx, reads):
         out = []
         for address, size, domain in reads:
-            if domain == item_sprites.CHR_DOMAIN:
-                out.append(bytes(self.chr[address:address + size]))
+            if domain in (item_sprites.CHR_DOMAIN, item_sprites.PRG_DOMAIN):
+                out.append(bytes(self.domain(domain)[address:address + size]))
             else:
                 out.append(bytes(self.ram.get(address + i, 0) for i in range(size)))
         return out
@@ -43,8 +52,7 @@ class FakeEmulator:
     async def guarded_write(self, _ctx, writes, _guards):
         self.write_calls += 1
         for address, data, domain in writes:
-            assert domain == item_sprites.CHR_DOMAIN
-            self.chr[address:address + len(data)] = data
+            self.domain(domain)[address:address + len(data)] = data
         return True
 
     def ap_tiles(self, bank: int) -> bytes:
@@ -111,6 +119,15 @@ class TestItemSprite(unittest.TestCase):
         # bottom tile: right 4 pixels of the left half, mirrored next to them: "0000111111110000" -> "00111100"
         self.assertEqual(rows[8], [0, 0, 1, 1, 1, 1, 0, 0])
 
+    def test_mirrored_item_stays_symmetric(self) -> None:
+        # an outline pixel next to a fill pixel in the left half: squeezing by pairs from the left kept the outline
+        # only on the left side, so the magic container came out lopsided
+        left = [[3, 1, 1, 1, 1, 1, 1, 1]] + [[0] * 8] * 15
+        sprite = item_sprites.item_sprite("Magic Container", {0x1820: item_sprites.encode(left)})
+        for row in item_sprites.decode(sprite):
+            self.assertEqual(row, row[::-1])
+        self.assertEqual(item_sprites.decode(sprite)[0], [3, 1, 1, 1, 1, 1, 1, 3])
+
     def test_decode_encode_round_trip(self) -> None:
         self.assertEqual(item_sprites.encode(item_sprites.decode(LOGO)), LOGO)
 
@@ -169,6 +186,28 @@ class TestItemSpriteCheck(unittest.TestCase):
             emulator.chr[at:at + 32] = CANDLE
         run(Client.Z2RClient(), make_ctx({"PALACE1:item1": ("Candle", 2)}), emulator)
         self.assertEqual(emulator.ap_tiles(0), LOGO)
+
+    def test_own_item_gets_its_palette_and_logo_gets_its_own_back(self) -> None:
+        emulator = FakeEmulator(dict(PALACE_ROOM))
+        client = Client.Z2RClient()
+        ctx = make_ctx({"PALACE1:item1": ("Candle", 1), "WEST_CAVE_HEART_CONTAINER": ("Hammer", 2)})
+        run(client, ctx, emulator)
+        self.assertEqual(emulator.prg[PALETTE_BYTE], 1)
+        emulator.ram.update(CAVE_ROOM)
+        run(client, ctx, emulator)
+        self.assertEqual(emulator.prg[PALETTE_BYTE], item_sprites.AP_PALETTE)
+
+    def test_jar_uses_the_jars_palette(self) -> None:
+        emulator = FakeEmulator(PALACE_ROOM)
+        emulator.chr[0x88A0:0x88C0] = CANDLE  # any tiles; only the palette matters here
+        run(Client.Z2RClient(), make_ctx({"PALACE1:item1": ("Red Magic Jar", 1)}), emulator)
+        self.assertEqual(emulator.prg[PALETTE_BYTE], 2)
+
+    def test_rom_without_the_palette_code_still_draws_the_item(self) -> None:
+        emulator = FakeEmulator(PALACE_ROOM, palette_table=False)
+        run(Client.Z2RClient(), make_ctx({"PALACE1:item1": ("Candle", 1)}), emulator)
+        self.assertEqual(emulator.ap_tiles(0), CANDLE)
+        self.assertEqual(emulator.prg[PALETTE_BYTE], 0)
 
 
 if __name__ == "__main__":

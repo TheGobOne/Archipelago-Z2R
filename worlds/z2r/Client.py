@@ -438,6 +438,8 @@ class Z2RClient(BizHawkClient):
     sprite_logo: bytes  # the AP item tiles as the ROM has them
     sprite_sources: dict[int, bytes]  # the ROM's item tiles, by CHR address
     sprite_shown: bytes | None  # what the AP item tiles were last set to
+    palette_address: int | None  # PRG ROM offset of the AP item's palette byte, if the ROM has the palette table
+    palette_shown: int | None  # what that byte was last set to
 
     def __init__(self) -> None:
         self.slot_name = ""
@@ -468,6 +470,8 @@ class Z2RClient(BizHawkClient):
         self.sprite_logo = b""
         self.sprite_sources = {}
         self.sprite_shown = None
+        self.palette_address = None
+        self.palette_shown = None
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
         try:
@@ -507,6 +511,8 @@ class Z2RClient(BizHawkClient):
         self.sprite_logo = b""
         self.sprite_sources = {}
         self.sprite_shown = None
+        self.palette_address = None
+        self.palette_shown = None
         ctx.game = self.game
         ctx.items_handling = 0b111
         ctx.want_slot_data = True
@@ -706,25 +712,30 @@ class Z2RClient(BizHawkClient):
         if room is None:
             return
         world, region, map_number, link_page = (value[0] for value in room)
-        wanted = self.sprite_logo
+        wanted, palette = self.sprite_logo, item_sprites.AP_PALETTE
         known = getattr(ctx, "locations_info", {})
         for name in item_sprites.room_locations(ctx.slot_data["locations"], world, region, map_number, link_page):
             info = known.get(LOCATION_NAME_TO_ID.get(name))
             if info is None:
                 break  # not scouted yet: keep the logo
             if info.player == ctx.slot:
-                sprite = item_sprites.item_sprite(ctx.item_names.lookup_in_game(info.item, self.game),
-                                                  self.sprite_sources)
-                wanted = sprite or self.sprite_logo
+                item_name = ctx.item_names.lookup_in_game(info.item, self.game)
+                sprite = item_sprites.item_sprite(item_name, self.sprite_sources)
+                if sprite:
+                    wanted, palette = sprite, item_sprites.item_palette(item_name)
             break
-        if wanted == self.sprite_shown:
+        if self.palette_address is None:
+            palette = self.palette_shown  # an older ROM without the palette table: leave its palette alone
+        if wanted == self.sprite_shown and palette == self.palette_shown:
             return
         writes = [(bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET, wanted, item_sprites.CHR_DOMAIN)
                   for bank in self.sprite_banks]
+        if self.palette_address is not None:
+            writes.append((self.palette_address, bytes([palette]), item_sprites.PRG_DOMAIN))
         room_guards = [(item_sprites.WORLD_NUMBER, [world], RAM), (item_sprites.REGION_NUMBER, [region], RAM),
                        (item_sprites.MAP_NUMBER, [map_number], RAM)]
         if await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, [*self.guards, *room_guards]):
-            self.sprite_shown = wanted
+            self.sprite_shown, self.palette_shown = wanted, palette
 
     async def find_sprite_banks(self, ctx: "BizHawkClientContext") -> bool:
         """Read the AP item tiles from each CHR bank and the ROM's item tiles. The banks holding the same tiles as
@@ -738,8 +749,14 @@ class Z2RClient(BizHawkClient):
                   item_sprites.CHR_DOMAIN) for bank in banks]
         reads += [(address, item_sprites.TILE_BYTES, item_sprites.CHR_DOMAIN)
                   for address in item_sprites.SOURCE_ADDRESSES]
+        reads.append((item_sprites.PALETTE_LOAD, 3, item_sprites.PRG_DOMAIN))
         data = [bytes(value) for value in await bizhawk.read(ctx.bizhawk_ctx, reads)]
-        ap_tiles, sources = data[:len(banks)], data[len(banks):]
+        ap_tiles, sources = data[:len(banks)], data[len(banks):-1]
+        self.palette_address = item_sprites.palette_address(data[-1])
+        if self.palette_address is not None:
+            # may still hold an item's palette from before a client restart; the next check fixes it if so
+            palette = await bizhawk.read(ctx.bizhawk_ctx, [(self.palette_address, 1, item_sprites.PRG_DOMAIN)])
+            self.palette_shown = bytes(palette[0])[0]
         self.sprite_sources = dict(zip(item_sprites.SOURCE_ADDRESSES, sources))
         reference = ap_tiles[item_sprites.REFERENCE_BANK]
         self.sprite_banks = [bank for bank, tiles in zip(banks, ap_tiles) if tiles == reference]

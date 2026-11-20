@@ -21,6 +21,30 @@ AP_LOGO = bytes.fromhex("0002007dfdffc6380307037dfcfec60054b4ab27570707032848535
 # from the ROM the way other items are.
 ONE_UP_TILES = bytes.fromhex("556086468659865d9a010d5b1b5a55308647866a865d9b0376c1037681037999")
 
+# Palettes. Items $10 and up take their sprite palette from ItemPaletteTable (FullItemShuffle.s in the app), which
+# the code at $F120 in bank 7 reads with "lda ItemPaletteTable - $10,x". The AP item is item $26 there, with palette 3
+# (the blue jar's). Items below $10 (the hammer, candle and so on) use palette 1.
+PRG_DOMAIN = "PRG ROM"
+PALETTE_LOAD = 0x1F120  # PRG ROM offset of that lda: $BD, then the table's address - $10
+AP_ITEM_ID = 0x26
+AP_PALETTE = 3
+ITEM_PALETTES = {"Blue Magic Jar": 3, "Red Magic Jar": 2, "1-Up": 0}  # every other item: 1
+
+
+def item_palette(name: str) -> int:
+    return ITEM_PALETTES.get(name, 1)
+
+
+def palette_address(load: bytes) -> int | None:
+    """PRG ROM offset of the AP item's palette byte, from the 3 bytes at PALETTE_LOAD, or None if they aren't the
+    expected lda (a ROM from an older app build)."""
+    if len(load) < 3 or load[0] != 0xBD:
+        return None
+    cpu = (load[1] | load[2] << 8) + AP_ITEM_ID
+    if not 0xE000 <= cpu <= 0xFFFF:
+        return None
+    return PALETTE_LOAD - 0x3120 + (cpu - 0xC000)
+
 # RAM (ram.inc in the Z2R app)
 MAP_NUMBER = 0x0561
 REGION_NUMBER = 0x0706  # 0 west, 1 Death Mountain, 2 east, 3 Maze Island
@@ -108,6 +132,11 @@ def item_sprite(name: str, sources: dict[int, bytes]) -> bytes | None:
         return None
     if len(tiles) == 1 and not tiles[0].flip:
         return bytes(sources[tiles[0].address])
+    if len(tiles) == 2 and tiles[0] == Tile(tiles[1].address) and tiles[1] == Tile(tiles[0].address, 1, True):
+        # A mirrored item (left half, then the same half flipped): squeeze the half to 4 pixels, keeping the
+        # strongest color of each pair so the outline survives, and mirror it, so both sides match
+        half = [[max(row[2 * x], row[2 * x + 1]) for x in range(4)] for row in decode(sources[tiles[0].address])]
+        return encode([row + row[::-1] for row in half])
     wide = [[0] * 16 for _ in range(16)]
     for tile in tiles:
         for y, row in enumerate(decode(sources[tile.address])):
