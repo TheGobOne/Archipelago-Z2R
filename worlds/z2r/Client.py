@@ -169,6 +169,7 @@ HUD_MESSAGE_ADDRESS = 0x2022  # nametable row 1, column 2
 HUD_MESSAGE_WIDTH = 28
 HUD_MESSAGE_SECONDS = 20.0
 HUD_MESSAGE_SECONDS_BUSY = 5.0  # each message's time when more are waiting
+WATCHER_SECONDS = 0.1  # how often the client reads the game (the default is 0.5)
 SERVER_OFFLINE_AFTER = 3.0  # seconds without the AP server before the HUD says so (as the FCEUX AP OFFLINE text)
 SERVER_OFFLINE_TEXT = "AP SERVER OFFLINE"
 ERROR_HUD_SECONDS = 8.0  # how often an error is put back in the HUD row
@@ -548,6 +549,7 @@ class Z2RClient(BizHawkClient):
         self.sprite_shown = None
         self.palette_address = None
         self.palette_shown = None
+        ctx.watcher_timeout = WATCHER_SECONDS  # check the game more often than the 0.5 s default so a pickup shows sooner
         # FCEUX shows one emulator message at a time: space queued ones out so each can be read
         try:
             await bizhawk.set_message_interval(ctx.bizhawk_ctx, EMULATOR_MESSAGE_SECONDS)
