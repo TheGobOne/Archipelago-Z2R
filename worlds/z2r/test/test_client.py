@@ -22,12 +22,12 @@ class FakeRam:
 
 
 class TestContainers(unittest.TestCase):
-    def run_check(self, received: list[str], ram: dict[int, int]) -> FakeRam:
+    def run_check(self, received: list[str], ram: dict[int, int], sender: int = 2) -> FakeRam:
         fake = FakeRam(ram)
         names = {ITEM_NAME_TO_ID[name]: name for name in received}
         ctx = SimpleNamespace(
             bizhawk_ctx=None, game="Z2R", team=0, slot=1, stored_data={}, set_notify=lambda *keys: None,
-            items_received=[SimpleNamespace(item=ITEM_NAME_TO_ID[name]) for name in received],
+            items_received=[SimpleNamespace(item=ITEM_NAME_TO_ID[name], player=sender) for name in received],
             item_names=SimpleNamespace(lookup_in_game=lambda item, game: names[item]),
             slot_data={"start_magic_containers": 4, "start_heart_containers": 4,
                        "new_kasuto_basement_requirement": 8})
@@ -58,6 +58,13 @@ class TestContainers(unittest.TestCase):
         fake = self.run_check(["Heart Container"], {0x0784: 4, 0x0783: 4})
         written = {address: value for address, value, _ in fake.writes}
         self.assertEqual(written[Client.MUSIC_REQUEST_ADDRESS], [Client.ITEM_GET_FANFARE])
+
+    def test_own_item_plays_no_fanfare(self) -> None:
+        # you picked it up yourself, so the game already played its fanfare
+        fake = self.run_check(["Heart Container"], {0x0784: 4, 0x0783: 4}, sender=1)
+        written = {address: value for address, value, _ in fake.writes}
+        self.assertIn(0x0784, written)  # still delivered
+        self.assertNotIn(Client.MUSIC_REQUEST_ADDRESS, written)
 
     def test_basement_bit_alone_plays_no_fanfare(self) -> None:
         # Starting containers already meet the requirement: only the basement bit is written
