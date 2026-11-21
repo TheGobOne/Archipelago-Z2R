@@ -59,7 +59,9 @@ class PickupMessageTextTest(unittest.TestCase):
         self.assertEqual(data[:3], bytes([0x20, 0x22, Client.HUD_MESSAGE_WIDTH]))
         self.assertEqual(len(data), 3 + Client.HUD_MESSAGE_WIDTH + 1)
         self.assertEqual(data[-1], 0xFF)
-        self.assertEqual(data[3], ord("G") + 0x99)
+        # "GOT HAMMER" is 10 tiles: 9 blanks on the left and 9 on the right of the 28-tile row
+        self.assertEqual(data[3:3 + 9], bytes([Client.BLANK_TILE]) * 9)
+        self.assertEqual(data[3 + 9], ord("G") + 0x99)
         self.assertEqual(data[-2], Client.BLANK_TILE)
 
 

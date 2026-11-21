@@ -186,6 +186,9 @@ def hud_message_bytes(text: str) -> bytes:
     """The PPU buffer entry that writes text (cut and padded to HUD_MESSAGE_WIDTH) into the HUD message row."""
     shown = "".join(c if c in HUD_CHARACTERS else " " for c in text.upper())
     tiles = encode_text(shown)[:-1][:HUD_MESSAGE_WIDTH]
+    # Centered in the row: blank tiles go on the left first, and an odd leftover tile goes on the right.
+    left = (HUD_MESSAGE_WIDTH - len(tiles)) // 2
+    tiles = bytes([BLANK_TILE]) * left + tiles
     tiles += bytes([BLANK_TILE]) * (HUD_MESSAGE_WIDTH - len(tiles))
     return bytes([HUD_MESSAGE_ADDRESS >> 8, HUD_MESSAGE_ADDRESS & 0xFF, HUD_MESSAGE_WIDTH]) + tiles + bytes([0xFF])
 
