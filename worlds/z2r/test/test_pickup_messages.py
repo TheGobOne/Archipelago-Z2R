@@ -16,7 +16,20 @@ class PickupMessageTextTest(unittest.TestCase):
     def test_long_names_are_cut_to_fit(self) -> None:
         text = Client.pickup_message("Progressive Ultra Mega Upgrade", "A Very Long Player", False)
         self.assertLessEqual(len(text), Client.HUD_MESSAGE_WIDTH)
-        self.assertEqual(text, "SENT AP ITEM TO A VERY LONG")
+        self.assertEqual(text, "SENT ULTRA TO A VERY LONG")
+
+    def test_any_sword_is_just_sword(self) -> None:
+        self.assertEqual(Client.pickup_message("Magical Sword", "Tetra", False), "SENT SWORD TO TETRA")
+        self.assertEqual(Client.pickup_message("Erdrick's Sword", "Gob-DWR", False), "SENT SWORD TO GOB-DWR")
+        self.assertEqual(Client.other_player_sign(2, "Tetra", "Progressive Sword"), "TETRA$SWORD")
+        self.assertEqual(Client.short_item_name("Swordfish Bait"), "SWORDFISH$BAIT")
+
+    def test_bracketed_part_becomes_initials(self) -> None:
+        self.assertEqual(Client.short_item_name("Compass (Palace of Darkness)"), "COMPASS$POD")
+        self.assertEqual(Client.short_item_name("Big Key (Ganons Tower)"), "BIG KEY GT")
+        self.assertEqual(Client.pickup_message("Compass (Palace of Darkness)", "Chadbert", False),
+                         "SENT COMPASS POD TO CHADBERT")
+        self.assertEqual(Client.other_player_sign(2, "Chadbert", "Compass (Palace of Darkness)"), "CHADBERT$COMPASS POD")
 
     def test_apostrophes_are_dropped(self) -> None:
         self.assertEqual(Client.pickup_message("Erdrick's Token", "Gob", False), "SENT ERDRICKS TOKEN TO GOB")
@@ -194,6 +207,13 @@ class HudMessageCheckTest(unittest.TestCase):
                               player_names={2: "Tetra"})
         self.assertEqual(client.pickup_text(ctx, 7), "SENT HOOKSHOT TO TETRA")
         self.assertIsNone(client.pickup_text(ctx, 8))
+
+    def test_own_crystal_has_no_pickup_text(self) -> None:
+        client = Client.Z2RClient()
+        ctx = SimpleNamespace(slot=1, locations_info={7: SimpleNamespace(item=0x30, player=1)},
+                              item_names=SimpleNamespace(lookup_in_slot=lambda item, player: "Crystal"),
+                              player_names={1: "Gob-Z2R"})
+        self.assertIsNone(client.pickup_text(ctx, 7))
 
 
 class ItemDialogTest(unittest.TestCase):
