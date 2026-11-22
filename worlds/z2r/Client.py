@@ -1016,14 +1016,17 @@ class Z2RClient(BizHawkClient):
             writes.append((LIFE_REFILL_ADDRESS, [LIFE_REFILL_AMOUNT], RAM))
         if desired[magic_address] > current[magic_address]:
             writes.append((MAGIC_REFILL_ADDRESS, [(desired[magic_address] << 4) & 0xFF], RAM))
+        # Your own item already played the game's fanfare when you picked it up, and starting items (player 0)
+        # are not pickups, so only items other players sent play it here. Items count as seen even when nothing
+        # had to be written, so held starting items do not make a later own pickup look like it came from others.
+        fresh = ctx.items_received[self.fanfare_seen:]
+        from_others = any(item.player not in (ctx.slot, 0) for item in fresh)
         if not writes:
+            self.fanfare_seen = len(ctx.items_received)
             return
         if not await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, self.guards):
             return
-        # Your own item already played the game's fanfare when you picked it up, so only items other players sent play it here.
-        fresh = ctx.items_received[self.fanfare_seen:]
         self.fanfare_seen = len(ctx.items_received)
-        from_others = any(item.player != ctx.slot for item in fresh)
         # A new item plays the game's own item-get fanfare, as a pickup would. The basement bit alone is not an item.
         # Consumables (keys, 1-ups, jars, P-bags) are given in consumable_check and stay silent. Only request the
         # fanfare when no other sound request is pending, so the game's own request that frame is not lost.
