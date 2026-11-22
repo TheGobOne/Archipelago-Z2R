@@ -1,6 +1,7 @@
 import logging
 import random
 import time
+import unicodedata
 from typing import NamedTuple, TYPE_CHECKING
 
 from BaseClasses import ItemClassification
@@ -175,6 +176,7 @@ SERVER_OFFLINE_TEXT = "AP SERVER OFFLINE"
 ERROR_HUD_SECONDS = 8.0  # how often an error is put back in the HUD row
 EMULATOR_MESSAGE_SECONDS = 3.0  # gap between queued emulator messages (overworld item text)
 RECEIVED_CATCH_UP_LIMIT = 4  # more received items than this at once show as one count
+RECEIVED_BURST_SHOWN = 5  # a burst names this many items, then "AND N MORE"
 HUD_MESSAGE_STALE = 10.0  # a message older than this is dropped: it no longer matches what just happened
 BLANK_TILE = 0xF4
 PPU_BUFFER_LENGTH = 0x0301  # index of the buffer's $FF end; the game appends its own entries there
@@ -193,17 +195,22 @@ def hud_message_bytes(text: str) -> bytes:
     return bytes([HUD_MESSAGE_ADDRESS >> 8, HUD_MESSAGE_ADDRESS & 0xFF, HUD_MESSAGE_WIDTH]) + tiles + bytes([0xFF])
 
 
+def _unaccented(text: str) -> str:
+    """text with accents removed (an E with an acute accent becomes E), so those letters are not lost as spaces."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+
+
 def _shown(text: str) -> str:
     """Text as the game can show it: upper case, characters the font has, single spaces."""
     kept = "".join(c if "A" <= c <= "Z" or "0" <= c <= "9" or c in ".,!?-/" else " "
-                   for c in text.upper().replace("'", ""))
+                   for c in _unaccented(text).upper().replace("'", ""))
     return " ".join(kept.split())
 
 
 def plain_item_name(item_name: str) -> str:
     """Any item with the word SWORD in its name ("Magical Sword", "Erdrick's Sword") is just
     SWORD; every other name is unchanged."""
-    words = "".join(c if c.isascii() and c.isalnum() else " " for c in item_name.upper().replace("'", "")).split()
+    words = "".join(c if c.isascii() and c.isalnum() else " " for c in _unaccented(item_name).upper().replace("'", "")).split()
     if "SWORD" in words or "SWORDS" in words:
         return "SWORD"
     # "Progressive Bow" is just "Bow": the word adds nothing on a sign or in the HUD
@@ -220,19 +227,28 @@ def bracket_initials(item_name: str) -> str:
     return f"{base} {initials}" if base and initials else base
 
 
+HUD_FILLER_WORDS = ("OF", "THE", "A")
+
+
 def _fit_item(item_name: str, room: int) -> str:
     """The item name in at most `room` characters: the full name, else its sign short form (FIGHTER'S RING ->
-    F-RING), else the name cut at the last whole word that fits (cut mid-word only if one word is too long)."""
+    F-RING), else the name without the filler words OF, THE and A, else that cut at the last whole word that fits
+    (never ending on a filler word). If even the first word is too long it is AP ITEM, or empty if that won't fit."""
     item_name = plain_item_name(item_name)
-    for candidate in (item_name, SIGN_SHORT_FORMS.get(item_name.upper(), ""), bracket_initials(item_name)):
-        shown = _shown(candidate)
-        if shown and len(shown) <= room:
-            return shown
     shown = _shown(bracket_initials(item_name) or item_name)
-    head = shown[:room + 1]
+    lean = " ".join(w for w in shown.split() if w not in HUD_FILLER_WORDS) or shown
+    for candidate in (item_name, SIGN_SHORT_FORMS.get(item_name.upper(), ""), bracket_initials(item_name), lean):
+        candidate = _shown(candidate)
+        if candidate and len(candidate) <= room:
+            return candidate
+    head = lean[:room + 1]
     if " " in head:  # cut at the last whole word that fits
-        return head.rsplit(" ", 1)[0].rstrip()
-    return "AP ITEM"  # even the first word is too long: a fragment would only confuse
+        cut = head.rsplit(" ", 1)[0].split()
+        while cut and cut[-1] in HUD_FILLER_WORDS:
+            cut.pop()
+        if cut:
+            return " ".join(cut)
+    return "AP ITEM" if room >= len("AP ITEM") else ""  # a fragment would only confuse
 
 
 def pickup_message(item_name: str, player_name: str, own: bool) -> str:
@@ -240,7 +256,7 @@ def pickup_message(item_name: str, player_name: str, own: bool) -> str:
     and the item shortened so the whole message fits HUD_MESSAGE_WIDTH."""
     if own:
         return f"GOT YOUR {_fit_item(item_name, HUD_MESSAGE_WIDTH - len('GOT YOUR '))}"
-    player = short_player_name(player_name) or "ANOTHER PLAYER"
+    player = short_player_name(player_name) or "SOMEONE"
     room = HUD_MESSAGE_WIDTH - len("SENT  TO ") - len(player)
     return f"SENT {_fit_item(item_name, room)} TO {player}"
 
@@ -250,7 +266,7 @@ def received_message(item_name: str, player_name: str) -> str:
     An empty player name means the server gave it (a starting item): "STARTED WITH <item>"."""
     if not player_name:
         return f"STARTED WITH {_fit_item(item_name, HUD_MESSAGE_WIDTH - len('STARTED WITH '))}"
-    player = short_player_name(player_name) or "ANOTHER PLAYER"
+    player = short_player_name(player_name) or "SOMEONE"
     room = HUD_MESSAGE_WIDTH - len("GOT  FROM ") - len(player)
     return f"GOT {_fit_item(item_name, room)} FROM {player}"
 
@@ -991,11 +1007,20 @@ class Z2RClient(BizHawkClient):
             groups = [(text, group) for text, group in groups if group]
             for text, group in groups:
                 line = text.format(len(group))
-                self.pickup_messages.append((line.replace("ITEMS", "ITEM") if len(group) == 1 else line, None,
-                                             max(e[0] for e in group)))
-            # then each item of the burst on its own line, as ZORA does; the last one also covers any own finds after it
-            new[-1] = (total,) + new[-1][1:]
-            self.pickup_messages.extend((received_message(name, sender), None, seen) for seen, name, sender in new)
+                # a count line carries no seen value: only item lines are counted as seen, so a reconnect
+                # mid-burst still shows the items that never got on screen
+                self.pickup_messages.append((line.replace("ITEMS", "ITEM") if len(group) == 1 else line, None))
+            # then the first RECEIVED_BURST_SHOWN items on their own lines, as ZORA does. Any more become one
+            # "AND N MORE" line that carries the total; otherwise the last item carries it. Either one also
+            # covers any own finds after it.
+            if len(new) > RECEIVED_BURST_SHOWN:
+                more = len(new) - RECEIVED_BURST_SHOWN
+                new = new[:RECEIVED_BURST_SHOWN]
+                self.pickup_messages.extend((received_message(name, sender), None, seen) for seen, name, sender in new)
+                self.pickup_messages.append((f"AND {more} MORE", None, total))
+            else:
+                new[-1] = (total,) + new[-1][1:]
+                self.pickup_messages.extend((received_message(name, sender), None, seen) for seen, name, sender in new)
         else:
             # no time stamp: these wait for side view however long that takes, instead of going stale.
             # The last one also covers any own finds after it.
