@@ -435,17 +435,26 @@ class ReceivedItemMessageTest(unittest.TestCase):
 
     def test_many_at_once_become_one_count(self) -> None:
         self.ctx.items_received = [SimpleNamespace(item=i, player=2) for i in range(7)]
-        self.assertEqual(self.announce(), ["GOT 7 ITEMS FROM OTHERS"])
+        texts = self.announce()
+        self.assertEqual(texts[0], "GOT 7 ITEMS FROM OTHERS")      # the count comes first
+        self.assertEqual(len(texts), 8)                            # then each of the 7 items
+        self.assertEqual([m[2] for m in self.client.pickup_messages], [7, 1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual(self.client.pickup_messages[-1][2], 7)    # the last carries the total
 
     def test_many_starting_items_are_not_from_others(self) -> None:
         self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(6)]
-        self.assertEqual(self.announce(), ["GOT 6 STARTING ITEMS"])
+        texts = self.announce()
+        self.assertEqual(texts[0], "GOT 6 STARTING ITEMS")
+        self.assertEqual(len(texts), 7)
         self.assertEqual(self.client.pickup_messages[0][2], 6)
 
     def test_starting_and_other_counts_are_split(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(3)]             + [SimpleNamespace(item=i, player=2) for i in range(3)]
-        self.assertEqual(self.announce(), ["GOT 3 STARTING ITEMS", "GOT 3 ITEMS FROM OTHERS"])
-        self.assertEqual([m[2] for m in self.client.pickup_messages], [3, 6])  # the last carries the total
+        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(3)] \
+            + [SimpleNamespace(item=i, player=2) for i in range(3)]
+        texts = self.announce()
+        self.assertEqual(texts[:2], ["GOT 3 STARTING ITEMS", "GOT 3 ITEMS FROM OTHERS"])
+        self.assertEqual(len(texts), 8)                             # then each of the 6 items
+        self.assertEqual(self.client.pickup_messages[-1][2], 6)     # the last carries the total
 
     def test_count_lines_fit_the_hud_and_use_hud_characters(self) -> None:
         self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(12)]             + [SimpleNamespace(item=i, player=2) for i in range(12)]

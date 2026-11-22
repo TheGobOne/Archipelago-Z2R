@@ -989,10 +989,13 @@ class Z2RClient(BizHawkClient):
             groups = [("GOT {} STARTING ITEMS", [e for e in new if not e[2]]),
                       ("GOT {} ITEMS FROM OTHERS", [e for e in new if e[2]])]
             groups = [(text, group) for text, group in groups if group]
-            for position, (text, group) in enumerate(groups):
-                seen = total if position == len(groups) - 1 else max(e[0] for e in group)
+            for text, group in groups:
                 line = text.format(len(group))
-                self.pickup_messages.append((line.replace("ITEMS", "ITEM") if len(group) == 1 else line, None, seen))
+                self.pickup_messages.append((line.replace("ITEMS", "ITEM") if len(group) == 1 else line, None,
+                                             max(e[0] for e in group)))
+            # then each item of the burst on its own line, as ZORA does; the last one also covers any own finds after it
+            new[-1] = (total,) + new[-1][1:]
+            self.pickup_messages.extend((received_message(name, sender), None, seen) for seen, name, sender in new)
         else:
             # no time stamp: these wait for side view however long that takes, instead of going stale.
             # The last one also covers any own finds after it.
