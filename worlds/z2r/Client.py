@@ -783,14 +783,18 @@ class Z2RClient(BizHawkClient):
             info = known.get(LOCATION_NAME_TO_ID.get(name))
             if info is None:
                 break  # not scouted yet: keep the logo
-            if info.flags & ItemClassification.progression:
-                palette = item_sprites.AP_PROGRESSION_PALETTE  # another player's progression item: red logo
             if info.player == ctx.slot:
                 item_name = ctx.item_names.lookup_in_game(info.item, self.game)
                 draw = item_sprites.wide_item_sprite if self.sprite_wide else item_sprites.item_sprite
                 sprite = draw(item_name, self.sprite_sources)
                 if sprite:
                     wanted, palette = sprite, item_sprites.item_palette(item_name)
+                    break
+            # another player's item (or one with no sprite): the logo, in its class's color. The name comes from the
+            # owning slot's game, so only Z2R's minor items (from any Z2R slot) turn white.
+            item_name = ctx.item_names.lookup_in_slot(info.item, info.player)
+            progression = bool(info.flags & ItemClassification.progression)
+            wanted = item_sprites.solid(self.sprite_logo, item_sprites.logo_index(progression, item_name))
             break
         if self.palette_address is None:
             palette = self.palette_shown  # an older ROM without the palette table: leave its palette alone

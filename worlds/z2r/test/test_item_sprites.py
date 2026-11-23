@@ -8,6 +8,8 @@ from ..Items import ITEM_NAME_TO_ID
 from ..Locations import LOCATION_NAME_TO_ID
 
 LOGO = item_sprites.AP_LOGO
+REGULAR_LOGO = item_sprites.solid(LOGO, item_sprites.REGULAR_INDEX)
+PROGRESSION_LOGO = item_sprites.solid(LOGO, item_sprites.PROGRESSION_INDEX)
 CANDLE = bytes(range(32))
 HEART_HALF = bytes([0xF0] * 8 + [0x00] * 8 + [0x0F] * 8 + [0x00] * 8)  # top: left 4 pixels; bottom: right 4
 PALETTE_BYTE = 0x1F631  # $F60B + $26 in bank 7 (PRG 0x1C000)
@@ -87,7 +89,8 @@ def make_ctx(placements: dict[str, tuple[str, int]], slot: int = 1):
         bizhawk_ctx=None, slot=slot, slot_data={"locations": LOCATIONS},
         locations_info={LOCATION_NAME_TO_ID[location]: SimpleNamespace(item=ITEM_NAME_TO_ID[item], player=player, flags=0)
                         for location, (item, player) in placements.items()},
-        item_names=SimpleNamespace(lookup_in_game=lambda item, game: names[item]))
+        item_names=SimpleNamespace(lookup_in_game=lambda item, game: names[item],
+                                   lookup_in_slot=lambda item, player: names.get(item, f"Unknown item {item}")))
 
 
 def run(client, ctx, emulator, mode=Client.HUD_MODE):
@@ -177,8 +180,12 @@ class TestItemSpriteCheck(unittest.TestCase):
 
     def test_other_players_item_keeps_the_logo(self) -> None:
         emulator = FakeEmulator(PALACE_ROOM)
-        run(Client.Z2RClient(), make_ctx({"PALACE1:item1": ("Candle", 2)}), emulator)
-        self.assertEqual(emulator.ap_tiles(0), LOGO)
+        client = Client.Z2RClient()
+        ctx = make_ctx({"PALACE1:item1": ("Candle", 2)})
+        run(client, ctx, emulator)
+        self.assertEqual(emulator.ap_tiles(0), REGULAR_LOGO)
+        emulator.write_calls = 0
+        run(client, ctx, emulator)
         self.assertEqual(emulator.write_calls, 0)
 
     def test_logo_comes_back_in_another_room(self) -> None:
@@ -189,7 +196,7 @@ class TestItemSpriteCheck(unittest.TestCase):
         self.assertEqual(emulator.ap_tiles(5), CANDLE)
         emulator.ram.update(CAVE_ROOM)
         run(client, ctx, emulator)
-        self.assertEqual(emulator.ap_tiles(5), LOGO)
+        self.assertEqual(emulator.ap_tiles(5), REGULAR_LOGO)
 
     def test_no_writes_while_nothing_changes(self) -> None:
         emulator = FakeEmulator(PALACE_ROOM)
@@ -216,7 +223,7 @@ class TestItemSpriteCheck(unittest.TestCase):
             at = bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET
             emulator.chr[at:at + 32] = CANDLE
         run(Client.Z2RClient(), make_ctx({"PALACE1:item1": ("Candle", 2)}), emulator)
-        self.assertEqual(emulator.ap_tiles(0), LOGO)
+        self.assertEqual(emulator.ap_tiles(0), REGULAR_LOGO)
 
     def test_own_item_gets_its_palette_and_logo_gets_its_own_back(self) -> None:
         emulator = FakeEmulator(dict(PALACE_ROOM))
@@ -233,8 +240,40 @@ class TestItemSpriteCheck(unittest.TestCase):
         ctx = make_ctx({"PALACE1:item1": ("Candle", 2)})
         ctx.locations_info[LOCATION_NAME_TO_ID["PALACE1:item1"]].flags = 0b001  # progression
         run(Client.Z2RClient(), ctx, emulator)
-        self.assertEqual(emulator.ap_tiles(0), LOGO)
-        self.assertEqual(emulator.prg[PALETTE_BYTE], item_sprites.AP_PROGRESSION_PALETTE)
+        self.assertEqual(emulator.ap_tiles(0), PROGRESSION_LOGO)
+        self.assertEqual(emulator.prg[PALETTE_BYTE], item_sprites.AP_PALETTE)
+
+    def test_other_players_minor_item_uses_the_white_logo(self) -> None:
+        emulator = FakeEmulator(PALACE_ROOM)
+        run(Client.Z2RClient(), make_ctx({"PALACE1:item1": ("Small Key", 2)}), emulator)
+        self.assertEqual(emulator.ap_tiles(0), item_sprites.solid(LOGO, item_sprites.MINOR_INDEX))
+
+    def test_other_games_item_uses_the_orange_logo(self) -> None:
+        emulator = FakeEmulator(PALACE_ROOM)
+        ctx = make_ctx({"PALACE1:item1": ("Small Key", 2)})
+        ctx.locations_info[LOCATION_NAME_TO_ID["PALACE1:item1"]].item = 9999  # an id from another game
+        run(Client.Z2RClient(), ctx, emulator)
+        self.assertEqual(emulator.ap_tiles(0), REGULAR_LOGO)
+
+    def test_restart_with_a_recolored_logo_drawn_recolors_from_it(self) -> None:
+        # an earlier run left the red logo in the AP tiles; another player's regular item turns it orange
+        emulator = FakeEmulator(PALACE_ROOM)
+        for bank in range(13):
+            at = bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET
+            emulator.chr[at:at + 32] = PROGRESSION_LOGO
+        run(Client.Z2RClient(), make_ctx({"PALACE1:item1": ("Candle", 2)}), emulator)
+        self.assertEqual(emulator.ap_tiles(0), REGULAR_LOGO)
+
+    def test_wide_restart_with_a_recolored_logo_drawn_recolors_from_it(self) -> None:
+        emulator = FakeEmulator(PALACE_ROOM, wide=True)
+        for bank in range(13):
+            at = bank * item_sprites.BANK_SIZE + item_sprites.AP_TILE_OFFSET
+            emulator.chr[at:at + 32] = PROGRESSION_LOGO
+        at = item_sprites.RIGHT_TILE_ADDRESS
+        emulator.chr[at:at + 32] = item_sprites.solid(item_sprites.AP_LOGO_RIGHT, item_sprites.PROGRESSION_INDEX)
+        run(Client.Z2RClient(), make_ctx({"PALACE1:item1": ("Small Key", 2)}), emulator)
+        self.assertEqual(emulator.ap_tiles(0), item_sprites.solid(LOGO, item_sprites.MINOR_INDEX))
+        self.assertEqual(emulator.right_tiles(), item_sprites.solid(item_sprites.AP_LOGO_RIGHT, item_sprites.MINOR_INDEX))
 
     def test_fixed_tile_rom_draws_the_item_there_and_leaves_the_one_up_tiles(self) -> None:
         emulator = FakeEmulator(PALACE_ROOM, fixed=True)
@@ -252,8 +291,7 @@ class TestItemSpriteCheck(unittest.TestCase):
         emulator.ram.update(CAVE_ROOM)
         run(client, ctx, emulator)
         at = item_sprites.FIXED_LEFT_ADDRESS
-        self.assertEqual(bytes(emulator.chr[at:at + 32]), LOGO)
-        self.assertEqual(emulator.right_tiles(), item_sprites.AP_LOGO_RIGHT)
+        self.assertEqual(bytes(emulator.chr[at:at + 32]), REGULAR_LOGO)
 
     def test_fixed_tile_rom_restarted_client_restores_the_logo(self) -> None:
         emulator = FakeEmulator(dict(PALACE_ROOM), fixed=True)
@@ -262,7 +300,7 @@ class TestItemSpriteCheck(unittest.TestCase):
         ctx = make_ctx({"WEST_CAVE_HEART_CONTAINER": ("Hammer", 2)})
         emulator.ram.update(CAVE_ROOM)
         run(Client.Z2RClient(), ctx, emulator)
-        self.assertEqual(bytes(emulator.chr[at:at + 32]), LOGO)
+        self.assertEqual(bytes(emulator.chr[at:at + 32]), REGULAR_LOGO)
 
     def test_jar_uses_the_jars_palette(self) -> None:
         emulator = FakeEmulator(PALACE_ROOM)
@@ -296,8 +334,8 @@ class TestItemSpriteCheck(unittest.TestCase):
         run(client, ctx, emulator)
         emulator.ram.update(CAVE_ROOM)
         run(client, ctx, emulator)
-        self.assertEqual(emulator.ap_tiles(0), LOGO)
-        self.assertEqual(emulator.right_tiles(), item_sprites.AP_LOGO_RIGHT)
+        self.assertEqual(emulator.ap_tiles(0), REGULAR_LOGO)
+        self.assertEqual(emulator.right_tiles(), item_sprites.solid(item_sprites.AP_LOGO_RIGHT, item_sprites.REGULAR_INDEX))
 
     def test_wide_rom_restarted_client_restores_the_logo(self) -> None:
         emulator = FakeEmulator(PALACE_ROOM, wide=True)
@@ -307,8 +345,8 @@ class TestItemSpriteCheck(unittest.TestCase):
             emulator.chr[at:at + 32] = drawn[:32]
         emulator.chr[item_sprites.RIGHT_TILE_ADDRESS:item_sprites.RIGHT_TILE_ADDRESS + 32] = drawn[32:]
         run(Client.Z2RClient(), make_ctx({"PALACE1:item1": ("Candle", 2)}), emulator)
-        self.assertEqual(emulator.ap_tiles(0), LOGO)
-        self.assertEqual(emulator.right_tiles(), item_sprites.AP_LOGO_RIGHT)
+        self.assertEqual(emulator.ap_tiles(0), REGULAR_LOGO)
+        self.assertEqual(emulator.right_tiles(), item_sprites.solid(item_sprites.AP_LOGO_RIGHT, item_sprites.REGULAR_INDEX))
 
     def test_rom_without_the_palette_code_still_draws_the_item(self) -> None:
         emulator = FakeEmulator(PALACE_ROOM, palette_table=False)
