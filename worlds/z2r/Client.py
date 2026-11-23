@@ -303,6 +303,9 @@ SIGN_SHORT_FORMS = {"MAGIC CONTAINER": "MC", "HEART CONTAINER": "HC",
                     "DRAGON'S SCALE": "D-SCALE", "ERDRICK'S ARMOR": "E-ARMOR", "ERDRICK'S SWORD": "E-SWORD",
                     "ERDRICK'S TOKEN": "E-TOKEN", "FIGHTER'S RING": "F-RING", "STAFF OF RAIN": "STAFF",
                     "STONES OF SUNLIGHT": "STONES"}
+# ZORA's level items (Add Triforces / Maps/Compasses to the Item Pool): "LEVEL 3 TRIFORCE" -> "TRIFORCE 3"
+SIGN_SHORT_FORMS |= {f"LEVEL {level} {kind}": f"{kind} {level}"
+                     for level in range(1, 10) for kind in ("TRIFORCE", "COMPASS", "MAP")}
 
 
 # Signs the client may overwrite: the app's placeholder, or a sign an earlier client wrote in the "TOWN" form
