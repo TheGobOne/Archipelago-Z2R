@@ -175,8 +175,6 @@ SERVER_OFFLINE_AFTER = 3.0  # seconds without the AP server before the HUD says 
 SERVER_OFFLINE_TEXT = "AP SERVER OFFLINE"
 ERROR_HUD_SECONDS = 8.0  # how often an error is put back in the HUD row
 EMULATOR_MESSAGE_SECONDS = 3.0  # gap between queued emulator messages (overworld item text)
-RECEIVED_CATCH_UP_LIMIT = 4  # more received items than this at once show as one count
-RECEIVED_BURST_SHOWN = 5  # a burst names this many items, then "AND N MORE"
 HUD_MESSAGE_STALE = 10.0  # a message older than this is dropped: it no longer matches what just happened
 BLANK_TILE = 0xF4
 PPU_BUFFER_LENGTH = 0x0301  # index of the buffer's $FF end; the game appends its own entries there
@@ -342,6 +340,9 @@ SIGN_SHORT_FORMS = {"MAGIC CONTAINER": "MC", "HEART CONTAINER": "HC",
                     "DRAGON'S SCALE": "D-SCALE", "ERDRICK'S ARMOR": "E-ARMOR", "ERDRICK'S SWORD": "E-SWORD",
                     "ERDRICK'S TOKEN": "E-TOKEN", "FIGHTER'S RING": "F-RING", "STAFF OF RAIN": "STAFF",
                     "STONES OF SUNLIGHT": "STONES"}
+# ZORA's level items (Add Triforces / Maps/Compasses to the Item Pool): "LEVEL 3 TRIFORCE" -> "TRIFORCE 3"
+SIGN_SHORT_FORMS |= {f"LEVEL {level} {kind}": f"{kind} {level}"
+                     for level in range(1, 10) for kind in ("TRIFORCE", "COMPASS", "MAP")}
 
 
 # Signs the client may overwrite: the app's placeholder, or a sign an earlier client wrote in the "TOWN" form
@@ -837,14 +838,18 @@ class Z2RClient(BizHawkClient):
             info = known.get(LOCATION_NAME_TO_ID.get(name))
             if info is None:
                 break  # not scouted yet: keep the logo
-            if info.flags & ItemClassification.progression:
-                palette = item_sprites.AP_PROGRESSION_PALETTE  # another player's progression item: red logo
             if info.player == ctx.slot:
                 item_name = ctx.item_names.lookup_in_game(info.item, self.game)
                 draw = item_sprites.wide_item_sprite if self.sprite_wide else item_sprites.item_sprite
                 sprite = draw(item_name, self.sprite_sources)
                 if sprite:
                     wanted, palette = sprite, item_sprites.item_palette(item_name)
+                    break
+            # another player's item (or one with no sprite): the logo, in its class's color. The name comes from the
+            # owning slot's game, so only Z2R's minor items (from any Z2R slot) turn white.
+            item_name = ctx.item_names.lookup_in_slot(info.item, info.player)
+            progression = bool(info.flags & ItemClassification.progression)
+            wanted = item_sprites.solid(self.sprite_logo, item_sprites.logo_index(progression, item_name))
             break
         if self.palette_address is None:
             palette = self.palette_shown  # an older ROM without the palette table: leave its palette alone
@@ -983,8 +988,7 @@ class Z2RClient(BizHawkClient):
         items have been shown is kept on the server, so items that arrived while another game was being played
         show when this one connects, and a reconnect doesn't show them twice. The count moves when a message is
         written to the HUD (save_hud_seen), not when it is queued, so a message still waiting for side view when
-        the player switches games or closes FCEUX shows next time. More than RECEIVED_CATCH_UP_LIMIT at once
-        become one "GOT N ITEMS" line."""
+        the player switches games or closes FCEUX shows next time. Every item gets its own message."""
         key = f"z2r_hud_seen_{ctx.team}_{ctx.slot}"
         ctx.set_notify(key)
         if key not in ctx.stored_data:
@@ -1001,27 +1005,6 @@ class Z2RClient(BizHawkClient):
         # the server ("Archipelago", player 0) gives starting items: they have no sender
         if not new:
             await self.save_hud_seen(ctx, total)  # nothing to show
-        elif len(new) > RECEIVED_CATCH_UP_LIMIT:
-            # starting items come from the server, not from other players: count each kind in its own line
-            groups = [("GOT {} STARTING ITEMS", [e for e in new if not e[2]]),
-                      ("GOT {} ITEMS FROM OTHERS", [e for e in new if e[2]])]
-            groups = [(text, group) for text, group in groups if group]
-            for text, group in groups:
-                line = text.format(len(group))
-                # a count line carries no seen value: only item lines are counted as seen, so a reconnect
-                # mid-burst still shows the items that never got on screen
-                self.pickup_messages.append((line.replace("ITEMS", "ITEM") if len(group) == 1 else line, None))
-            # then the first RECEIVED_BURST_SHOWN items on their own lines, as ZORA does. Any more become one
-            # "AND N MORE" line that carries the total; otherwise the last item carries it. Either one also
-            # covers any own finds after it.
-            if len(new) > RECEIVED_BURST_SHOWN:
-                more = len(new) - RECEIVED_BURST_SHOWN
-                new = new[:RECEIVED_BURST_SHOWN]
-                self.pickup_messages.extend((received_message(name, sender), None, seen) for seen, name, sender in new)
-                self.pickup_messages.append((f"AND {more} MORE", None, total))
-            else:
-                new[-1] = (total,) + new[-1][1:]
-                self.pickup_messages.extend((received_message(name, sender), None, seen) for seen, name, sender in new)
         else:
             # no time stamp: these wait for side view however long that takes, instead of going stale.
             # The last one also covers any own finds after it.

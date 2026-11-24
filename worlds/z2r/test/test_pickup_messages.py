@@ -474,82 +474,10 @@ class ReceivedItemMessageTest(unittest.TestCase):
         self.assertEqual(self.announce(), [])
         self.assertEqual(self.ctx.stored_data[self.KEY], 1)
 
-    def test_many_at_once_become_one_count(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=2) for i in range(7)]
-        texts = self.announce()
-        self.assertEqual(texts[0], "GOT 7 ITEMS FROM OTHERS")      # the count comes first
-        self.assertEqual(texts[1:6], [f"GOT ITEM{i} FROM TETRA" for i in range(5)])  # then the first 5 items
-        self.assertEqual(texts[6], "AND 2 MORE")
-        self.assertEqual(len(texts), 7)
-        self.assertEqual(len(self.client.pickup_messages[0]), 2)   # the count line saves nothing
-        self.assertEqual([m[2] for m in self.client.pickup_messages[1:]], [1, 2, 3, 4, 5, 7])
-        self.assertEqual(self.client.pickup_messages[-1][2], 7)    # AND N MORE carries the total
-
-    def test_burst_of_five_has_no_more_line(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=2) for i in range(5)]
-        texts = self.announce()
-        self.assertEqual(len(texts), 6)
-        self.assertNotIn("MORE", texts[-1])
-        self.assertEqual(self.client.pickup_messages[-1][2], 5)
-
-    def test_more_line_covers_the_rest(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=2) for i in range(9)]
-        self.announce()
-        self.show_n(7)                                             # the count line, 5 items and AND 3 MORE
-        self.assertEqual(self.ctx.stored_data[self.KEY], 9)
-        self.assertEqual(self.client.pickup_messages, [])
-        fresh = Client.Z2RClient()
-        self.client = fresh
-        self.assertEqual(self.announce(), [])                      # nothing is replayed
-
-    def test_count_line_does_not_save_a_seen_value(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=2) for i in range(7)]
-        self.announce()
-        self.show_n(1)                                             # only the count line
-        self.assertEqual(self.client.hud_message_text, "GOT 7 ITEMS FROM OTHERS")
-        self.assertEqual(self.seen_sets(), [])
-
-    def test_reconnect_mid_burst_shows_the_unshown_items(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=2) for i in range(7)]
-        self.announce()
-        self.show_n(3)                                             # the count line, item 0 and item 1
-        self.assertEqual(self.ctx.stored_data[self.KEY], 2)
-        self.client = Client.Z2RClient()                           # the player switches games and comes back
-        texts = self.announce()
-        self.assertEqual(texts[0], "GOT 5 ITEMS FROM OTHERS")
-        self.assertEqual(texts[1:], [f"GOT ITEM{i} FROM TETRA" for i in range(2, 7)])
-
-    def test_starting_item_after_items_from_others(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=2) for i in range(3)]             + [SimpleNamespace(item=i, player=0) for i in range(3, 5)]
-        texts = self.announce()
-        self.assertEqual(texts[:2], ["GOT 2 STARTING ITEMS", "GOT 3 ITEMS FROM OTHERS"])
-        self.assertEqual(texts[2:], [f"GOT ITEM{i} FROM TETRA" for i in range(3)]
-                         + [f"STARTED WITH ITEM{i}" for i in range(3, 5)])
-        self.assertEqual([m[2] for m in self.client.pickup_messages[2:]], [1, 2, 3, 4, 5])
-        self.show_n(2)
-        self.assertEqual(self.seen_sets(), [])                     # count lines save nothing
-        self.show_n(1)
-        self.assertEqual(self.ctx.stored_data[self.KEY], 1)
-
-    def test_many_starting_items_are_not_from_others(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(6)]
-        texts = self.announce()
-        self.assertEqual(texts[0], "GOT 6 STARTING ITEMS")
-        self.assertEqual(len(texts), 7)
-        self.assertEqual(self.client.pickup_messages[-1][2], 6)
-
-    def test_starting_and_other_counts_are_split(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(3)]             + [SimpleNamespace(item=i, player=2) for i in range(3)]
-        texts = self.announce()
-        self.assertEqual(texts[:2], ["GOT 3 STARTING ITEMS", "GOT 3 ITEMS FROM OTHERS"])
-        self.assertEqual(len(texts), 8)                             # then each of the 6 items
-        self.assertEqual(self.client.pickup_messages[-1][2], 6)     # the last carries the total
-
-    def test_count_lines_fit_the_hud_and_use_hud_characters(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(12)]             + [SimpleNamespace(item=i, player=2) for i in range(12)]
-        for text in self.announce():
-            self.assertLessEqual(len(text), Client.HUD_MESSAGE_WIDTH)
-            self.assertTrue(set(text) <= Client.HUD_CHARACTERS)
+    def test_many_at_once_each_get_a_message(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(3)]             + [SimpleNamespace(item=i, player=2) for i in range(4)]
+        self.assertEqual(len(self.announce()), 7)
+        self.assertEqual(self.client.pickup_messages[-1][2], 7)  # the last carries the total
 
     def test_received_messages_wait_for_side_view(self) -> None:
         self.ctx.items_received = [SimpleNamespace(item=5, player=2)]
