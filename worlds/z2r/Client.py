@@ -1,6 +1,7 @@
 import logging
 import random
 import time
+import unicodedata
 from typing import NamedTuple, TYPE_CHECKING
 
 from BaseClasses import ItemClassification
@@ -117,9 +118,9 @@ SIGN_NAMES = {
     "Large P-Bag": "P BAG", "Magic Container": "MAGIC$CONTAINER", "Heart Container": "HEART$CONTAINER",
     "Blue Magic Jar": "BLUE JAR", "Red Magic Jar": "RED JAR", "1-Up": "LINK DOLL", "Child": "CHILD",
     "Trophy": "TROPHY", "Medicine": "MEDICINE", "Upstab": "UP STAB", "Downstab": "DOWN STAB", "Mirror": "MIRROR",
-    "Bagu's Note": "BAGUS$LETTER", "Water": "WATER", "Shield Spell": "SHIELD$SPELL", "Jump Spell": "JUMP$SPELL",
-    "Life Spell": "LIFE$SPELL", "Fairy Spell": "FAIRY$SPELL", "Fire Spell": "FIRE$SPELL", "Dash Spell": "DASH$SPELL",
-    "Reflect Spell": "REFLECT$SPELL", "Spell Spell": "SPELL$SPELL", "Thunder Spell": "THUNDER$SPELL",
+    "Bagu's Note": "BAGUS$LETTER", "Water": "WATER", "Shield Spell": "SHIELD", "Jump Spell": "JUMP",
+    "Life Spell": "LIFE", "Fairy Spell": "FAIRY", "Fire Spell": "FIRE", "Dash Spell": "DASH",
+    "Reflect Spell": "REFLECT", "Spell Spell": "SPELL", "Thunder Spell": "THUNDER",
 }
 OTHER_ITEM_SIGN = "AP$ITEM"
 
@@ -192,25 +193,60 @@ def hud_message_bytes(text: str) -> bytes:
     return bytes([HUD_MESSAGE_ADDRESS >> 8, HUD_MESSAGE_ADDRESS & 0xFF, HUD_MESSAGE_WIDTH]) + tiles + bytes([0xFF])
 
 
+def _unaccented(text: str) -> str:
+    """text with accents removed (an E with an acute accent becomes E), so those letters are not lost as spaces."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+
+
 def _shown(text: str) -> str:
     """Text as the game can show it: upper case, characters the font has, single spaces."""
     kept = "".join(c if "A" <= c <= "Z" or "0" <= c <= "9" or c in ".,!?-/" else " "
-                   for c in text.upper().replace("'", ""))
+                   for c in _unaccented(text).upper().replace("'", ""))
     return " ".join(kept.split())
+
+
+def plain_item_name(item_name: str) -> str:
+    """Any item with the word SWORD in its name ("Magical Sword", "Erdrick's Sword") is just
+    SWORD; every other name is unchanged."""
+    words = "".join(c if c.isascii() and c.isalnum() else " " for c in _unaccented(item_name).upper().replace("'", "")).split()
+    if "SWORD" in words or "SWORDS" in words:
+        return "SWORD"
+    # "Progressive Bow" is just "Bow": the word adds nothing on a sign or in the HUD
+    kept = [word for word in item_name.split() if word.lower() != "progressive"]
+    return " ".join(kept) if kept else item_name
+
+
+def bracket_initials(item_name: str) -> str:
+    """"Compass (Palace of Darkness)" as "COMPASS POD": the part in brackets as initials. Empty if there are none."""
+    if "(" not in item_name:
+        return ""
+    base = _shown(item_name[:item_name.index("(")])
+    initials = "".join(w[0] for w in _shown(item_name[item_name.index("(") + 1:].split(")")[0]).split())
+    return f"{base} {initials}" if base and initials else base
+
+
+HUD_FILLER_WORDS = ("OF", "THE", "A")
 
 
 def _fit_item(item_name: str, room: int) -> str:
     """The item name in at most `room` characters: the full name, else its sign short form (FIGHTER'S RING ->
-    F-RING), else the name cut at the last whole word that fits (cut mid-word only if one word is too long)."""
-    for candidate in (item_name, SIGN_SHORT_FORMS.get(item_name.upper(), "")):
-        shown = _shown(candidate)
-        if shown and len(shown) <= room:
-            return shown
-    shown = _shown(item_name)
-    head = shown[:room + 1]
+    F-RING), else the name without the filler words OF, THE and A, else that cut at the last whole word that fits
+    (never ending on a filler word). If even the first word is too long it is AP ITEM, or empty if that won't fit."""
+    item_name = plain_item_name(item_name)
+    shown = _shown(bracket_initials(item_name) or item_name)
+    lean = " ".join(word for word in shown.split() if word not in HUD_FILLER_WORDS) or shown
+    for candidate in (item_name, SIGN_SHORT_FORMS.get(item_name.upper(), ""), bracket_initials(item_name), lean):
+        candidate = _shown(candidate)
+        if candidate and len(candidate) <= room:
+            return candidate
+    head = lean[:room + 1]
     if " " in head:  # cut at the last whole word that fits
-        return head.rsplit(" ", 1)[0].rstrip()
-    return "AP ITEM"  # even the first word is too long: a fragment would only confuse
+        cut = head.rsplit(" ", 1)[0].split()
+        while cut and cut[-1] in HUD_FILLER_WORDS:
+            cut.pop()
+        if cut:
+            return " ".join(cut)
+    return "AP ITEM" if room >= len("AP ITEM") else ""  # a fragment would only confuse
 
 
 def pickup_message(item_name: str, player_name: str, own: bool) -> str:
@@ -218,7 +254,7 @@ def pickup_message(item_name: str, player_name: str, own: bool) -> str:
     and the item shortened so the whole message fits HUD_MESSAGE_WIDTH."""
     if own:
         return f"GOT YOUR {_fit_item(item_name, HUD_MESSAGE_WIDTH - len('GOT YOUR '))}"
-    player = short_player_name(player_name) or "ANOTHER PLAYER"
+    player = short_player_name(player_name) or "SOMEONE"
     room = HUD_MESSAGE_WIDTH - len("SENT  TO ") - len(player)
     return f"SENT {_fit_item(item_name, room)} TO {player}"
 
@@ -228,7 +264,7 @@ def received_message(item_name: str, player_name: str) -> str:
     An empty player name means the server gave it (a starting item): "STARTED WITH <item>"."""
     if not player_name:
         return f"STARTED WITH {_fit_item(item_name, HUD_MESSAGE_WIDTH - len('STARTED WITH '))}"
-    player = short_player_name(player_name) or "ANOTHER PLAYER"
+    player = short_player_name(player_name) or "SOMEONE"
     room = HUD_MESSAGE_WIDTH - len("GOT  FROM ") - len(player)
     return f"GOT {_fit_item(item_name, room)} FROM {player}"
 
@@ -284,6 +320,8 @@ def other_player_sign(player: int, player_name: str, item_name: str) -> str:
 
     candidates = [short_item_name(item_name, SIGN_LINE_LENGTH), SIGN_SHORT_FORMS.get(item_name.upper())]
     candidates += [short_item_name(item_name, width) for width in range(SIGN_LINE_LENGTH - 1, 5, -1)]
+    if "(" in item_name:  # "SMALL KEY MM", else just "SMALL KEY"
+        candidates += [bracket_initials(item_name), _shown(item_name[:item_name.index("(")])]
     item = next((text for text in candidates if fits(text)), OTHER_ITEM_SIGN)
     return f"{name}${item}"
 
@@ -345,7 +383,7 @@ def hint_bytes(text: str, number: int) -> bytes | None:
 FILLER_WORDS = {"THE", "OF", "A", "AN", "AND", "TO", "FOR", "WITH", "IN", "ON"}
 # Common words in item names and shorter forms that still read clearly
 WORD_SWAPS = {
-    "PROGRESSIVE": "PROG", "CONTAINER": "CONT", "CONTAINERS": "CONT", "UPGRADE": "UPGRD", "UPGRADES": "UPGRD",
+    "CONTAINER": "CONT", "CONTAINERS": "CONT", "UPGRADE": "UPGRD", "UPGRADES": "UPGRD",
     "CAPACITY": "CAP", "EXPANSION": "EXP", "MAXIMUM": "MAX", "MINIMUM": "MIN", "LEGENDARY": "LEGEND",
     "MAGICAL": "MAGIC", "COLLECTIBLE": "COLLECT", "FRAGMENT": "FRAG", "FRAGMENTS": "FRAGS", "ABILITY": "ABIL",
     "CHARACTER": "CHAR", "EQUIPMENT": "EQUIP", "INCREASE": "UP", "DOUBLE": "2X", "TRIPLE": "3X",
@@ -376,7 +414,9 @@ def hint_sentence(place: str, item_name: str, owner: str | None) -> str:
     has no apostrophe). Word-wrapped into at most four 11-character lines. A long item name falls back to its sign
     short form, then AP ITEM."""
     head = f"{place} HAS YOUR" if owner is None else f"{place} HAS {owner}S"
-    candidates = [item_name, SIGN_SHORT_FORMS.get(item_name.upper(), ""), "AP ITEM"]
+    item_name = plain_item_name(item_name)
+    candidates = [item_name, SIGN_SHORT_FORMS.get(item_name.upper(), ""), bracket_initials(item_name),
+                  _shown(bracket_initials(item_name)).rsplit(" ", 1)[0] if "(" in item_name else "", "AP ITEM"]
     for candidate in candidates:
         item = _shown(candidate)
         if not item:
@@ -394,16 +434,15 @@ def hint_sentence(place: str, item_name: str, owner: str | None) -> str:
 
 def short_item_name(name: str, width: int | None = None) -> str | None:
     """An item name as at most two lines of HINT_LINE_LENGTH characters ($ between them), or None if it can't be
-    made to fit and stay readable. Tries, in order: the full name; "Progressive X" as "X UPGRADE"; without filler
-    words; with common words swapped for shorter forms; then cutting the longest words down a letter at a time."""
+    made to fit and stay readable. Tries, in order: the full name; without filler words; with common words swapped
+    for shorter forms; then cutting the longest words down a letter at a time."""
+    name = plain_item_name(name)
     # keep only what the game can show: A-Z, 0-9 and a few symbols; anything else splits words
     cleaned = "".join(c if (c.isascii() and c.isalnum()) or c in ".,!?-" else " "
                       for c in name.upper().replace("'", ""))
     words = cleaned.split()
     if not words:
         return None
-    if len(words) > 1 and words[0] == "PROGRESSIVE":
-        words = words[1:] + ([] if words[-1] in ("UPGRADE", "UPGRADES") else ["UPGRADE"])
 
     def done(candidate: list[str]) -> str | None:
         lines = _fit(candidate, width)
@@ -416,6 +455,17 @@ def short_item_name(name: str, width: int | None = None) -> str | None:
     for attempt in attempts:
         if result := done(attempt):
             return result
+
+    # "Compass (Palace of Darkness)": the item with the part in brackets as initials (COMPASS POD), then without it
+    # This is likely to fail in a more general set of strings across AP
+    if "(" in name:
+        inside = name[name.index("(") + 1:].split(")")[0]
+        base = short_item_name(name[:name.index("(")], width) if name[:name.index("(")].strip() else None
+        initials = "".join(word[0] for word in _shown(inside).split())
+        if base and initials and (result := done(base.replace("$", " ").split() + [initials])):
+            return result
+        if base:
+            return base
 
     # cut the longest word by one letter at a time, keeping at least 3 letters of each
     words = attempts[-1][:]
@@ -669,11 +719,14 @@ class Z2RClient(BizHawkClient):
                         f"({len(ctx.locations_checked)}/{len(ctx.missing_locations) + len(ctx.checked_locations)})")
 
     def pickup_text(self, ctx: "BizHawkClientContext", location_id: int) -> str | None:
-        """The pickup message for a location this slot just checked, or None if its item isn't known yet."""
+        """The pickup message for a location this slot just checked, or None if its item isn't known yet or is this
+        slot's own palace crystal (the game already shows the crystal going onto the statue)."""
         info = ctx.locations_info.get(location_id)
         if info is None:
             return None
         item_name = ctx.item_names.lookup_in_slot(info.item, info.player)
+        if info.player == ctx.slot and item_name == "Crystal":
+            return None
         return pickup_message(item_name, ctx.player_names.get(info.player, ""), info.player == ctx.slot)
 
     async def item_text_check(self, ctx: "BizHawkClientContext") -> None:

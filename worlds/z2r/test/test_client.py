@@ -230,7 +230,7 @@ class TestTownSigns(unittest.TestCase):
 
 class TestShortItemName(unittest.TestCase):
     def test_short_names_fit_two_lines(self) -> None:
-        self.assertEqual(Client.short_item_name("Progressive Sword"), "SWORD$UPGRADE")
+        self.assertEqual(Client.short_item_name("Progressive Sword"), "SWORD")
         self.assertEqual(Client.short_item_name("Bow"), "BOW")
         self.assertEqual(Client.short_item_name("Ice Beam"), "ICE BEAM")
         self.assertEqual(Client.short_item_name("Link's Bow"), "LINKS BOW")
@@ -291,7 +291,7 @@ class TestHelpfulHints(unittest.TestCase):
         rom = self.make_rom()
         self.run_check(self.make_ctx({self.GRASS: (1, "Hammer", 1), self.PALACE: (2, "Progressive Sword", 1)}), rom)
         expected = {Client.hint_bytes("GRASS TILE$HAS YOUR$HAMMER", 0)[:-1],
-                    Client.hint_bytes("P1 HAS$TETRAS$PROGRESSIVE$SWORD", 1)[:-1]}
+                    Client.hint_bytes("P1 HAS$TETRAS$SWORD", 1)[:-1]}
         self.assertEqual(self.written(rom), expected)
         self.assertEqual(self.hint(rom, self.HINT_A)[-1], 0x80)
         self.assertEqual(self.hint(rom, self.HINT_B)[-1], 0x81)

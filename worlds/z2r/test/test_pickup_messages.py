@@ -16,7 +16,20 @@ class PickupMessageTextTest(unittest.TestCase):
     def test_long_names_are_cut_to_fit(self) -> None:
         text = Client.pickup_message("Progressive Ultra Mega Upgrade", "A Very Long Player", False)
         self.assertLessEqual(len(text), Client.HUD_MESSAGE_WIDTH)
-        self.assertEqual(text, "SENT AP ITEM TO A VERY LONG")
+        self.assertEqual(text, "SENT ULTRA TO A VERY LONG")
+
+    def test_any_sword_is_just_sword(self) -> None:
+        self.assertEqual(Client.pickup_message("Magical Sword", "Tetra", False), "SENT SWORD TO TETRA")
+        self.assertEqual(Client.pickup_message("Erdrick's Sword", "Gob-DWR", False), "SENT SWORD TO GOB-DWR")
+        self.assertEqual(Client.other_player_sign(2, "Tetra", "Progressive Sword"), "TETRA$SWORD")
+        self.assertEqual(Client.short_item_name("Swordfish Bait"), "SWORDFISH$BAIT")
+
+    def test_bracketed_part_becomes_initials(self) -> None:
+        self.assertEqual(Client.short_item_name("Compass (Palace of Darkness)"), "COMPASS$POD")
+        self.assertEqual(Client.short_item_name("Big Key (Ganons Tower)"), "BIG KEY GT")
+        self.assertEqual(Client.pickup_message("Compass (Palace of Darkness)", "Chadbert", False),
+                         "SENT COMPASS POD TO CHADBERT")
+        self.assertEqual(Client.other_player_sign(2, "Chadbert", "Compass (Palace of Darkness)"), "CHADBERT$COMPASS POD")
 
     def test_apostrophes_are_dropped(self) -> None:
         self.assertEqual(Client.pickup_message("Erdrick's Token", "Gob", False), "SENT ERDRICKS TOKEN TO GOB")
@@ -195,6 +208,13 @@ class HudMessageCheckTest(unittest.TestCase):
         self.assertEqual(client.pickup_text(ctx, 7), "SENT HOOKSHOT TO TETRA")
         self.assertIsNone(client.pickup_text(ctx, 8))
 
+    def test_own_crystal_has_no_pickup_text(self) -> None:
+        client = Client.Z2RClient()
+        ctx = SimpleNamespace(slot=1, locations_info={7: SimpleNamespace(item=0x30, player=1)},
+                              item_names=SimpleNamespace(lookup_in_slot=lambda item, player: "Crystal"),
+                              player_names={1: "Gob-Z2R"})
+        self.assertIsNone(client.pickup_text(ctx, 7))
+
 
 class ItemDialogTest(unittest.TestCase):
     def test_text_is_bounded_to_four_lines(self) -> None:
@@ -321,6 +341,38 @@ class ErrorDisplayTest(unittest.TestCase):
         self.assertEqual(len(logs.records), 1)
 
 
+class ItemFitTest(unittest.TestCase):
+    def test_triforces_keep_their_distinguishing_word(self) -> None:
+        a = Client._fit_item("Triforce of Courage", 16)
+        b = Client._fit_item("Triforce of Power", 16)
+        self.assertEqual((a, b), ("TRIFORCE COURAGE", "TRIFORCE POWER"))
+
+    def test_never_ends_on_a_filler_word(self) -> None:
+        for name in ("Key of the Ancients", "Boots of the Wind Walker", "Orb of A Thousand Suns"):
+            for room in range(1, 30):
+                fit = Client._fit_item(name, room)
+                self.assertLessEqual(len(fit), room)
+                self.assertNotIn(fit.split()[-1:] and fit.split()[-1], ("OF", "THE", "A"))
+
+    def test_empty_player_name_fits(self) -> None:
+        for own in (False, True):
+            for name in ("Hookshot", "Triforce of Courage", "Progressive Ultra Mega Upgrade"):
+                self.assertLessEqual(len(Client.pickup_message(name, "", own)), Client.HUD_MESSAGE_WIDTH)
+                self.assertLessEqual(len(Client.received_message(name, "")), Client.HUD_MESSAGE_WIDTH)
+
+    def test_every_message_fits(self) -> None:
+        for player in ("", "A", "Gob-Z2R", "Extremelylongplayername"):
+            for name in ("Hookshot", "Triforce of Courage", "Compass (Palace of Darkness)", "Zzzzzzzzzzzzzzzzzzzzzzzzzzzz"):
+                self.assertLessEqual(len(Client.pickup_message(name, player, False)), Client.HUD_MESSAGE_WIDTH)
+                self.assertLessEqual(len(Client.received_message(name, player)), Client.HUD_MESSAGE_WIDTH)
+
+    def test_accented_letters_are_kept_as_plain_letters(self) -> None:
+        self.assertEqual(Client._shown("Potén Crème"), "POTEN CREME")
+        self.assertEqual(Client.plain_item_name("Epée Sword"), "SWORD")
+        self.assertEqual(Client.plain_item_name("Épée Magique"), "Épée Magique")
+        self.assertEqual(Client.bracket_initials("Clé (Palais Été)"), "CLE PE")
+
+
 class ReceivedItemMessageTest(unittest.TestCase):
     KEY = "z2r_hud_seen_0_1"
 
@@ -352,6 +404,15 @@ class ReceivedItemMessageTest(unittest.TestCase):
         with mock.patch.object(Client.bizhawk, "guarded_write", guarded_write), \
                 mock.patch.object(Client.time, "monotonic", lambda: now):
             asyncio.run(self.client.hud_message_check(self.ctx, Client.HUD_MODE))
+
+    def show_n(self, count: int) -> None:
+        """Ticks the HUD until `count` queued messages have been written (each waits for the one before to clear)."""
+        t = 1.0
+        while count > 0 and self.client.pickup_messages:
+            before = len(self.client.pickup_messages)
+            self.show(t)
+            count -= before - len(self.client.pickup_messages)
+            t += 1.0
 
     def seen_sets(self) -> list:
         return [m["operations"] for m in self.sent if m.get("cmd") == "Set"]
