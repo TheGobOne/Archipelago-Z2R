@@ -174,7 +174,6 @@ SERVER_OFFLINE_AFTER = 3.0  # seconds without the AP server before the HUD says 
 SERVER_OFFLINE_TEXT = "AP SERVER OFFLINE"
 ERROR_HUD_SECONDS = 8.0  # how often an error is put back in the HUD row
 EMULATOR_MESSAGE_SECONDS = 3.0  # gap between queued emulator messages (overworld item text)
-RECEIVED_CATCH_UP_LIMIT = 4  # more received items than this at once show as one count
 HUD_MESSAGE_STALE = 10.0  # a message older than this is dropped: it no longer matches what just happened
 BLANK_TILE = 0xF4
 PPU_BUFFER_LENGTH = 0x0301  # index of the buffer's $FF end; the game appends its own entries there
@@ -936,8 +935,7 @@ class Z2RClient(BizHawkClient):
         items have been shown is kept on the server, so items that arrived while another game was being played
         show when this one connects, and a reconnect doesn't show them twice. The count moves when a message is
         written to the HUD (save_hud_seen), not when it is queued, so a message still waiting for side view when
-        the player switches games or closes FCEUX shows next time. More than RECEIVED_CATCH_UP_LIMIT at once
-        become one "GOT N ITEMS" line."""
+        the player switches games or closes FCEUX shows next time. Every item gets its own message."""
         key = f"z2r_hud_seen_{ctx.team}_{ctx.slot}"
         ctx.set_notify(key)
         if key not in ctx.stored_data:
@@ -954,15 +952,6 @@ class Z2RClient(BizHawkClient):
         # the server ("Archipelago", player 0) gives starting items: they have no sender
         if not new:
             await self.save_hud_seen(ctx, total)  # nothing to show
-        elif len(new) > RECEIVED_CATCH_UP_LIMIT:
-            # starting items come from the server, not from other players: count each kind in its own line
-            groups = [("GOT {} STARTING ITEMS", [e for e in new if not e[2]]),
-                      ("GOT {} ITEMS FROM OTHERS", [e for e in new if e[2]])]
-            groups = [(text, group) for text, group in groups if group]
-            for position, (text, group) in enumerate(groups):
-                seen = total if position == len(groups) - 1 else max(e[0] for e in group)
-                line = text.format(len(group))
-                self.pickup_messages.append((line.replace("ITEMS", "ITEM") if len(group) == 1 else line, None, seen))
         else:
             # no time stamp: these wait for side view however long that takes, instead of going stale.
             # The last one also covers any own finds after it.

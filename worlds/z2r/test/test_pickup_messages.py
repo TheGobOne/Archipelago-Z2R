@@ -413,25 +413,10 @@ class ReceivedItemMessageTest(unittest.TestCase):
         self.assertEqual(self.announce(), [])
         self.assertEqual(self.ctx.stored_data[self.KEY], 1)
 
-    def test_many_at_once_become_one_count(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=2) for i in range(7)]
-        self.assertEqual(self.announce(), ["GOT 7 ITEMS FROM OTHERS"])
-
-    def test_many_starting_items_are_not_from_others(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(6)]
-        self.assertEqual(self.announce(), ["GOT 6 STARTING ITEMS"])
-        self.assertEqual(self.client.pickup_messages[0][2], 6)
-
-    def test_starting_and_other_counts_are_split(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(3)]             + [SimpleNamespace(item=i, player=2) for i in range(3)]
-        self.assertEqual(self.announce(), ["GOT 3 STARTING ITEMS", "GOT 3 ITEMS FROM OTHERS"])
-        self.assertEqual([m[2] for m in self.client.pickup_messages], [3, 6])  # the last carries the total
-
-    def test_count_lines_fit_the_hud_and_use_hud_characters(self) -> None:
-        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(12)]             + [SimpleNamespace(item=i, player=2) for i in range(12)]
-        for text in self.announce():
-            self.assertLessEqual(len(text), Client.HUD_MESSAGE_WIDTH)
-            self.assertTrue(set(text) <= Client.HUD_CHARACTERS)
+    def test_many_at_once_each_get_a_message(self) -> None:
+        self.ctx.items_received = [SimpleNamespace(item=i, player=0) for i in range(3)]             + [SimpleNamespace(item=i, player=2) for i in range(4)]
+        self.assertEqual(len(self.announce()), 7)
+        self.assertEqual(self.client.pickup_messages[-1][2], 7)  # the last carries the total
 
     def test_received_messages_wait_for_side_view(self) -> None:
         self.ctx.items_received = [SimpleNamespace(item=5, player=2)]
