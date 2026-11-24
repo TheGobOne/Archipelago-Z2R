@@ -214,7 +214,7 @@ def plain_item_name(item_name: str) -> str:
     if "SWORD" in words or "SWORDS" in words:
         return "SWORD"
     # "Progressive Bow" is just "Bow": the word adds nothing on a sign or in the HUD
-    kept = [w for w in item_name.split() if w.lower() != "progressive"]
+    kept = [word for word in item_name.split() if word.lower() != "progressive"]
     return " ".join(kept) if kept else item_name
 
 
@@ -236,7 +236,7 @@ def _fit_item(item_name: str, room: int) -> str:
     (never ending on a filler word). If even the first word is too long it is AP ITEM, or empty if that won't fit."""
     item_name = plain_item_name(item_name)
     shown = _shown(bracket_initials(item_name) or item_name)
-    lean = " ".join(w for w in shown.split() if w not in HUD_FILLER_WORDS) or shown
+    lean = " ".join(word for word in shown.split() if word not in HUD_FILLER_WORDS) or shown
     for candidate in (item_name, SIGN_SHORT_FORMS.get(item_name.upper(), ""), bracket_initials(item_name), lean):
         candidate = _shown(candidate)
         if candidate and len(candidate) <= room:
@@ -456,10 +456,11 @@ def short_item_name(name: str, width: int | None = None) -> str | None:
             return result
 
     # "Compass (Palace of Darkness)": the item with the part in brackets as initials (COMPASS POD), then without it
+    # This is likely to fail in a more general set of strings across AP
     if "(" in name:
         inside = name[name.index("(") + 1:].split(")")[0]
         base = short_item_name(name[:name.index("(")], width) if name[:name.index("(")].strip() else None
-        initials = "".join(w[0] for w in _shown(inside).split())
+        initials = "".join(word[0] for word in _shown(inside).split())
         if base and initials and (result := done(base.replace("$", " ").split() + [initials])):
             return result
         if base:
