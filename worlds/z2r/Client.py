@@ -633,7 +633,9 @@ class Z2RClient(BizHawkClient):
             await self.server_offline_check(ctx)
             return
         self.server_lost_at = None
-        if ctx.slot_data is None:
+        # After switching games the context can still hold the previous game's slot data until this slot's Connected
+        # packet replaces it. Only Z2R slot data has "locations", so wait for it instead of crashing the watcher.
+        if ctx.slot_data is None or "locations" not in ctx.slot_data:
             return
 
         # The signature holds the first 32 characters of the seed, with non-ASCII characters replaced by "?"
