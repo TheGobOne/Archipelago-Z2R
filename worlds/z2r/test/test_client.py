@@ -59,6 +59,19 @@ class TestContainers(unittest.TestCase):
         written = {address: value for address, value, _ in fake.writes}
         self.assertEqual(written[Client.MUSIC_REQUEST_ADDRESS], [Client.ITEM_GET_FANFARE])
 
+    def test_crystal_fanfare_is_not_interrupted(self) -> None:
+        # interrupting it soft locks the game: Link stays frozen at the statue with no refill
+        fake = self.run_check(["Reflect Spell"], {Client.CURRENT_MUSIC_ADDRESS: 0x40, Client.WORLD_ADDRESS: 3})
+        written = {address: value for address, value, _ in fake.writes}
+        self.assertIn(0x0780, written)  # still delivered
+        self.assertNotIn(Client.MUSIC_REQUEST_ADDRESS, written)
+
+    def test_great_palace_music_does_not_block_the_fanfare(self) -> None:
+        fake = self.run_check(["Reflect Spell"], {Client.CURRENT_MUSIC_ADDRESS: 0x40,
+                                                  Client.WORLD_ADDRESS: Client.GREAT_PALACE_WORLD})
+        written = {address: value for address, value, _ in fake.writes}
+        self.assertEqual(written[Client.MUSIC_REQUEST_ADDRESS], [Client.ITEM_GET_FANFARE])
+
     def test_own_item_plays_no_fanfare(self) -> None:
         # you picked it up yourself, so the game already played its fanfare
         fake = self.run_check(["Heart Container"], {0x0784: 4, 0x0783: 4}, sender=1)

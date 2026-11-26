@@ -85,6 +85,14 @@ LIFE_REFILL_AMOUNT = 0xF0
 # for about 3 seconds, then resumes the area music (checked in FCEUX on a Z2R seed, 2026-11-20).
 MUSIC_REQUEST_ADDRESS = 0x00EB
 ITEM_GET_FANFARE = 0x10
+# The music playing now (0 when none), and the world number
+CURRENT_MUSIC_ADDRESS = 0x07FB
+WORLD_ADDRESS = 0x0707
+GREAT_PALACE_WORLD = 5
+# After a crystal is placed, Link stays frozen until this fanfare is over and no music is playing. Replacing it with
+# the item-get fanfare brings the area music back afterwards, which loops, so the game soft locks (no refill). The
+# Great Palace has no crystal, and the same bit can be looping music there.
+CRYSTAL_FANFARE = 0x40
 # The game only counts as "in control of Link" when the game event is the main loop and the game mode has settled
 # (GameMode == GameModeCurrent) on the overworld or a side view. Item presence bits read as "collected" and the flag
 # area is meaningless on the title screen and file select, so nothing is read or written otherwise.
@@ -1082,8 +1090,18 @@ class Z2RClient(BizHawkClient):
         # Consumables (keys, 1-ups, jars, P-bags) are given in consumable_check and stay silent. Only request the
         # fanfare when no other sound request is pending, so the game's own request that frame is not lost.
         if from_others and any(address != BASEMENT_ACCESS_ADDRESS for address, _, _ in writes):
-            await bizhawk.guarded_write(ctx.bizhawk_ctx, [(MUSIC_REQUEST_ADDRESS, [ITEM_GET_FANFARE], RAM)],
-                                        [*self.guards, (MUSIC_REQUEST_ADDRESS, [0], RAM)])
+            await self.play_item_fanfare(ctx)
+
+    async def play_item_fanfare(self, ctx: "BizHawkClientContext") -> None:
+        """Request the item-get fanfare, unless that would interrupt the crystal fanfare (see CRYSTAL_FANFARE)."""
+        music, world = [value[0] for value in await bizhawk.read(
+            ctx.bizhawk_ctx, [(CURRENT_MUSIC_ADDRESS, 1, RAM), (WORLD_ADDRESS, 1, RAM)])]
+        if music & CRYSTAL_FANFARE and world != GREAT_PALACE_WORLD:
+            return
+        # guarded on the music too: nothing is written if the crystal fanfare started since the read above
+        await bizhawk.guarded_write(ctx.bizhawk_ctx, [(MUSIC_REQUEST_ADDRESS, [ITEM_GET_FANFARE], RAM)],
+                                    [*self.guards, (MUSIC_REQUEST_ADDRESS, [0], RAM),
+                                     (CURRENT_MUSIC_ADDRESS, [music], RAM)])
 
     def wizard_towns(self, ctx: "BizHawkClientContext") -> dict[int, int]:
         """Location ID -> town type for each wizard location in this slot."""
