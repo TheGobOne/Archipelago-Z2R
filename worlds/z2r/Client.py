@@ -27,6 +27,15 @@ SIGNATURE_ADDRESS = 0x1FCB0
 SIGNATURE_SIZE = 0x40
 SIGNATURE_MAGIC = b"Z2AP"
 SIGNATURE_VERSION = 1
+# The byte after the version says what else the ROM can do (ArchipelagoSignature.cs in the Z2R app)
+SIGNATURE_FEATURES_OFFSET = 5
+ITEM_TIMES_FEATURE = 0x01
+
+# The stats screen shows when these were picked up, which the game only does for its own pickups. A ROM with the item
+# times feature takes a bit for each item given here (bit = position in TIMED_ITEMS, the ROM's timestamp type) and
+# records the time itself, then clears the byte. ApStatMailbox in the Z2R app's ram.inc.
+ITEM_TIME_MAILBOX_ADDRESS = 0x01BC
+TIMED_ITEMS = ("Glove", "Raft", "Boots", "Hammer", "Jump Spell", "Fairy Spell", "Reflect Spell", "Thunder Spell")
 
 # NES CPU RAM, used for everything below
 RAM = "RAM"
@@ -489,6 +498,7 @@ def short_item_name(name: str, width: int | None = None) -> str | None:
 class Z2RClient(BizHawkClient):
     game = "Z2R"
     system = "NES"
+    item_times = False  # the ROM has the item times feature (see ITEM_TIME_MAILBOX_ADDRESS)
 
     slot_name: str
     rom_seed: str
@@ -579,6 +589,7 @@ class Z2RClient(BizHawkClient):
         if block[:4] != SIGNATURE_MAGIC or block[4] != SIGNATURE_VERSION:
             return False
 
+        self.item_times = bool(block[SIGNATURE_FEATURES_OFFSET] & ITEM_TIMES_FEATURE)
         self.slot_name = block[0x08:0x18].split(b"\x00")[0].decode("ascii", errors="replace")
         self.rom_seed = block[0x18:0x38].split(b"\x00")[0].decode("ascii", errors="replace")
         self.rom_hash = "".join(self.decode_hash_tile(hash_tiles[i * 2]) for i in range(HASH_LENGTH))
@@ -1043,7 +1054,8 @@ class Z2RClient(BizHawkClient):
         addresses = sorted({data.address for name, data in ITEM_TABLE.items()
                             if name in received and data.address is not None}
                            | {CONTAINER_ITEMS[name][0] for name in CONTAINER_ITEMS if name in received}
-                           | {BASEMENT_ACCESS_ADDRESS, CONTAINER_ITEMS["Magic Container"][0]})
+                           | {BASEMENT_ACCESS_ADDRESS, CONTAINER_ITEMS["Magic Container"][0]}
+                           | ({ITEM_TIME_MAILBOX_ADDRESS} if self.item_times else set()))
         current = {address: value[0] for address, value in zip(addresses, await bizhawk.read(
             ctx.bizhawk_ctx, [(address, 1, RAM) for address in addresses]))}
         desired = dict(current)
@@ -1067,6 +1079,17 @@ class Z2RClient(BizHawkClient):
         if desired[CONTAINER_ITEMS["Magic Container"][0]] >= ctx.slot_data["new_kasuto_basement_requirement"]:
             desired[BASEMENT_ACCESS_ADDRESS] |= BASEMENT_ACCESS_MASK
 
+        guards = self.guards
+        if self.item_times:
+            # Flag the items this check adds, so the ROM times them. Starting items (player 0) are not pickups.
+            found = {ctx.item_names.lookup_in_game(item.item, ctx.game) for item in ctx.items_received if item.player}
+            for bit, name in enumerate(TIMED_ITEMS):
+                address = ITEM_TABLE[name].address
+                if name in found and not current[address] and desired[address]:
+                    desired[ITEM_TIME_MAILBOX_ADDRESS] |= 1 << bit
+            # guarded on the mailbox too: if the ROM emptied it since the read, nothing is written and we try again
+            guards = [*guards, (ITEM_TIME_MAILBOX_ADDRESS, [current[ITEM_TIME_MAILBOX_ADDRESS]], RAM)]
+
         writes = [(address, [value], RAM) for address, value in desired.items() if value != current[address]]
         # Mirror the game's own pickup: a container that was just added refills its bar
         magic_address = CONTAINER_ITEMS["Magic Container"][0]
@@ -1083,7 +1106,7 @@ class Z2RClient(BizHawkClient):
         if not writes:
             self.fanfare_seen = len(ctx.items_received)
             return
-        if not await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, self.guards):
+        if not await bizhawk.guarded_write(ctx.bizhawk_ctx, writes, guards):
             return
         self.fanfare_seen = len(ctx.items_received)
         # A new item plays the game's own item-get fanfare, as a pickup would. The basement bit alone is not an item.

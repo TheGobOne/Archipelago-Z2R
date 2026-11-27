@@ -22,7 +22,8 @@ class FakeRam:
 
 
 class TestContainers(unittest.TestCase):
-    def run_check(self, received: list[str], ram: dict[int, int], sender: int = 2) -> FakeRam:
+    def run_check(self, received: list[str], ram: dict[int, int], sender: int = 2,
+                  item_times: bool = False) -> FakeRam:
         fake = FakeRam(ram)
         names = {ITEM_NAME_TO_ID[name]: name for name in received}
         ctx = SimpleNamespace(
@@ -32,10 +33,38 @@ class TestContainers(unittest.TestCase):
             slot_data={"start_magic_containers": 4, "start_heart_containers": 4,
                        "new_kasuto_basement_requirement": 8})
         client = Client.Z2RClient()
+        client.guards = []
+        client.item_times = item_times
         with mock.patch.object(Client.bizhawk, "read", fake.read), \
                 mock.patch.object(Client.bizhawk, "guarded_write", fake.guarded_write):
             asyncio.run(client.received_items_check(ctx, b""))
         return fake
+
+    def mailbox(self, fake: FakeRam) -> list[int] | None:
+        return {address: value for address, value, _ in fake.writes}.get(Client.ITEM_TIME_MAILBOX_ADDRESS)
+
+    def test_new_items_are_flagged_for_their_times(self) -> None:
+        # own finds are delivered by the client too, so they are timed like items from others
+        for sender in (1, 2):
+            fake = self.run_check(["Glove", "Reflect Spell", "Candle"], {0x0783: 4, 0x0784: 4}, sender=sender,
+                                  item_times=True)
+            self.assertEqual(self.mailbox(fake), [1 << 0 | 1 << 6])
+
+    def test_a_flag_the_game_has_not_read_yet_is_kept(self) -> None:
+        fake = self.run_check(["Raft"], {0x0783: 4, 0x0784: 4, Client.ITEM_TIME_MAILBOX_ADDRESS: 1},
+                              item_times=True)
+        self.assertEqual(self.mailbox(fake), [0b11])
+
+    def test_held_and_starting_items_are_not_timed(self) -> None:
+        held = self.run_check(["Glove", "Raft"], {0x0783: 4, 0x0784: 4, 0x0786: 1}, item_times=True)
+        self.assertEqual(self.mailbox(held), [1 << 1])
+        starting = self.run_check(["Glove"], {0x0783: 4, 0x0784: 4}, sender=0, item_times=True)
+        self.assertIsNone(self.mailbox(starting))
+
+    def test_rom_without_item_times_gets_no_flags(self) -> None:
+        # on an older ROM the mailbox byte means nothing, so it is left alone
+        fake = self.run_check(["Glove"], {0x0783: 4, 0x0784: 4})
+        self.assertIsNone(self.mailbox(fake))
 
     def test_magic_container_refills_magic(self) -> None:
         fake = self.run_check(["Magic Container"], {0x0783: 4})
