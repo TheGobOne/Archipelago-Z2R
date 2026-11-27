@@ -336,6 +336,7 @@ def other_player_sign(player: int, player_name: str, item_name: str) -> str:
 
     candidates = [short_item_name(item_name, SIGN_LINE_LENGTH), SIGN_SHORT_FORMS.get(item_name.upper())]
     candidates += [short_item_name(item_name, width) for width in range(SIGN_LINE_LENGTH - 1, 5, -1)]
+    candidates.append(SIGN_TINY_FORMS.get(item_name.upper()))
     if "(" in item_name:  # "SMALL KEY MM", else just "SMALL KEY"
         candidates += [bracket_initials(item_name), _shown(item_name[:item_name.index("(")])]
     item = next((text for text in candidates if fits(text)), OTHER_ITEM_SIGN)
@@ -360,6 +361,12 @@ SIGN_SHORT_FORMS = {"MAGIC CONTAINER": "MC", "HEART CONTAINER": "HC",
 SIGN_SHORT_FORMS |= {f"LEVEL {level} {kind}": f"{kind} {level}"
                      for kind, levels in (("TRIFORCE", range(1, 9)), ("COMPASS", range(1, 10)), ("MAP", range(1, 10)))
                      for level in levels}
+
+
+# Eight-character forms for when the short form would still cut a long player name: "LEVEL 3 TRIFORCE" -> "TRIFRC 3"
+SIGN_TINY_FORMS = {f"LEVEL {level} {kind}": f"{tiny} {level}"
+                   for kind, tiny, levels in (("TRIFORCE", "TRIFRC", range(1, 9)), ("COMPASS", "COMPAS", range(1, 10)))
+                   for level in levels}
 
 
 # Signs the client may overwrite: the app's placeholder, or a sign an earlier client wrote in the "TOWN" form
