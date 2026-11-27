@@ -4,7 +4,6 @@ import time
 import unicodedata
 from typing import NamedTuple, TYPE_CHECKING
 
-from BaseClasses import ItemClassification
 from NetUtils import ClientStatus
 
 import worlds._bizhawk as bizhawk
@@ -359,7 +358,8 @@ SIGN_SHORT_FORMS = {"MAGIC CONTAINER": "MC", "HEART CONTAINER": "HC",
                     "STONES OF SUNLIGHT": "STONES"}
 # ZORA's level items (Add Triforces / Maps/Compasses to the Item Pool): "LEVEL 3 TRIFORCE" -> "TRIFORCE 3"
 SIGN_SHORT_FORMS |= {f"LEVEL {level} {kind}": f"{kind} {level}"
-                     for level in range(1, 10) for kind in ("TRIFORCE", "COMPASS", "MAP")}
+                     for kind, levels in (("TRIFORCE", range(1, 9)), ("COMPASS", range(1, 10)), ("MAP", range(1, 10)))
+                     for level in levels}
 
 
 # Signs the client may overwrite: the app's placeholder, or a sign an earlier client wrote in the "TOWN" form
@@ -866,11 +866,8 @@ class Z2RClient(BizHawkClient):
                 if sprite:
                     wanted, palette = sprite, item_sprites.item_palette(item_name)
                     break
-            # another player's item (or one with no sprite): the logo, in its class's color. The name comes from the
-            # owning slot's game, so only Z2R's minor items (from any Z2R slot) turn white.
-            item_name = ctx.item_names.lookup_in_slot(info.item, info.player)
-            progression = bool(info.flags & ItemClassification.progression)
-            wanted = item_sprites.solid(self.sprite_logo, item_sprites.logo_index(progression, item_name))
+            # another player's item (or one with no sprite): the logo, in its class's color
+            wanted = item_sprites.solid(self.sprite_logo, item_sprites.logo_index(info.flags))
             break
         if self.palette_address is None:
             palette = self.palette_shown  # an older ROM without the palette table: leave its palette alone

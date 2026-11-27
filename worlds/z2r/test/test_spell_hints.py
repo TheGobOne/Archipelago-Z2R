@@ -60,6 +60,9 @@ class SpellHintTextTest(unittest.TestCase):
                         self.assertTrue(all(len(line) <= 11 for line in text.split("$")), text)
                         self.assertIsNotNone(Client.spell_hint_bytes(text, item))
 
+    def test_unlisted_own_world_location_is_somewhere(self) -> None:
+        self.assertEqual(spell_hint_text("Water", "Tetra", "NOT_A_REAL_LOC", True), "WATER AT$TETRA$SOMEWHERE")
+
     def test_location_too_long_falls_back_instead_of_none(self) -> None:
         text = spell_hint_text("Water", "Tetra", "Some Extremely Long Location Name Here", False, game="DWR")
         self.assertEqual(text, "WATER AT$TETRA$IN DWR")

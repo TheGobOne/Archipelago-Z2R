@@ -408,6 +408,10 @@ class TestOtherPlayerSigns(unittest.TestCase):
         self.assertEqual(Client.other_player_sign(3, "Gob-ZORA", "Boomerang Upgrade"), "GOB-ZORA$BOOMER UP")
         self.assertEqual(Client.other_player_sign(2, "Gob-DWR", "Power Bracelet"), "GOB-DWR$PB")
 
+    def test_zora_level_items_use_their_short_form(self) -> None:
+        self.assertEqual(Client.other_player_sign(2, "Gob-ZORA", "Level 3 Triforce"), "GOB-ZORA$TRIFORCE 3")
+        self.assertEqual(Client.other_player_sign(2, "Gob-ZORA", "Level 9 Compass"), "GOB-ZORA$COMPASS 9")
+
     def test_full_item_name_used_when_it_fits(self) -> None:
         self.assertEqual(Client.other_player_sign(2, "Gob-DWR", "Hammer"), "GOB-DWR$HAMMER")
 

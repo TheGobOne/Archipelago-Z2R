@@ -115,7 +115,7 @@ def spell_hint_text(item: str, owner: str, location: str, same_game: bool, own: 
     if there is one, else the location's own name, else the game's name, else ANOTHER GAME. Each is cut to fit two
     lines, so the NPC never keeps the AP HINT placeholder."""
     if same_game:
-        lines = _two_lines(HINT_LOCATION_NAMES.get(location, OTHER_GAME_LOCATION)) or _two_lines("SOMEWHERE")
+        lines = _two_lines(HINT_LOCATION_NAMES.get(location, "SOMEWHERE")) or _two_lines("SOMEWHERE")
     else:
         short = ((zora_level_name(location) if game == "ZORA" else None)
                  or OTHER_GAME_LOCATION_NAMES.get(game, {}).get(location))
